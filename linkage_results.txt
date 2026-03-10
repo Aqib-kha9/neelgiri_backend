@@ -1,0 +1,19 @@
+--- DATA LINKAGE ANALYSIS (LEAN MODE) ---
+1. Target Shipment: awb03 by dhoni-dispatcher
+   Status: not_scheduled
+   Destination Branch ID: 6960afd3cf51192ddf36d7e7
+2. Branch Found: "mahewar 1 (kila)"
+   Branch ID: 6960afd3cf51192ddf36d7e7
+   Linked Partner ID Raw: 695cd5d5ca14f0b0695e262d
+Analysis Error: MissingSchemaError: Schema hasn't been registered for model "Role".
+Use mongoose.model(name, schema)
+    at NativeConnection.model (C:\ForD\BlackGrapes\delivery\delivery_backend\node_modules\mongoose\lib\connection.js:1503:13)
+    at _getModelFromConn (C:\ForD\BlackGrapes\delivery\delivery_backend\node_modules\mongoose\lib\helpers\populate\getModelsMapForPopulate.js:590:15)
+    at addModelNamesToMap (C:\ForD\BlackGrapes\delivery\delivery_backend\node_modules\mongoose\lib\helpers\populate\getModelsMapForPopulate.js:518:17)
+    at getModelsMapForPopulate (C:\ForD\BlackGrapes\delivery\delivery_backend\node_modules\mongoose\lib\helpers\populate\getModelsMapForPopulate.js:211:7)
+    at _populatePath (C:\ForD\BlackGrapes\delivery\delivery_backend\node_modules\mongoose\lib\model.js:4308:21)
+    at Function.populate (C:\ForD\BlackGrapes\delivery\delivery_backend\node_modules\mongoose\lib\model.js:4275:21)
+    at Query._completeOne (C:\ForD\BlackGrapes\delivery\delivery_backend\node_modules\mongoose\lib\query.js:2647:18)
+    at C:\ForD\BlackGrapes\delivery\delivery_backend\node_modules\mongoose\lib\query.js:2721:10
+    at new Promise (<anonymous>)
+    at model.Query._findOne (C:\ForD\BlackGrapes\delivery\delivery_backend\node_modules\mongoose\lib\query.js:2720:10)

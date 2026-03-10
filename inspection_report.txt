@@ -1,0 +1,42 @@
+Connected to MongoDB
+
+=== ROLES ===
+[695cd5d4ca14f0b0695e2625] name: "super_admin", displayName: "Super Admin"
+[695cd5d4ca14f0b0695e2626] name: "partner_admin", displayName: "Delivery Partner"
+[695cd5d4ca14f0b0695e2627] name: "branch_admin", displayName: "Branch Manager"
+[695cd5d4ca14f0b0695e2628] name: "dispatcher", displayName: "Dispatcher"
+[695cd5d4ca14f0b0695e2629] name: "rider", displayName: "Rider"
+[695cd5d4ca14f0b0695e262a] name: "customer", displayName: "Customer"
+[6961ff8d51a4989d65f4c83b] name: "le_beta", displayName: "le beta"
+
+=== USERS (Rider-like or relevant) ===
+[695cd5d5ca14f0b0695e262c] name: "Super Admin", email: "superadmin@logistics.com", roleName: "super_admin", branch: "null"
+[695cd5d5ca14f0b0695e262d] name: "Delivery Partner", email: "partner@delivery.com", roleName: "partner_admin", branch: "null"
+[695cd5d5ca14f0b0695e262e] name: "Branch Manager", email: "branch@delivery.com", roleName: "branch_admin", branch: "6960afd3cf51192ddf36d7e7"
+[695cd5d5ca14f0b0695e2630] name: "Rider User", email: "rider@delivery.com", roleName: "rider", branch: "undefined"
+[6960a5dcea995d0a4a0d48e6] name: "Karahi Post Partner (451220)", email: "sdu3.sd@gmail.com", roleName: "partner_admin", branch: "undefined"
+[6960a623ea995d0a4a0d48fe] name: "Mahesh Main (89556)", email: "maisar@gmail.com", roleName: "partner_admin", branch: "undefined"
+[6960a6a7ea995d0a4a0d4916] name: "Badwah Partner, khargone-mp (451111)", email: "badwah@gmail.com", roleName: "partner_admin", branch: "undefined"
+[6960b003cf51192ddf36d7ef] name: "mahewar 1", email: "maheshwar.kila@gmail.com", roleName: "branch_admin", branch: "6960afd3cf51192ddf36d7e7"
+[6960b9d2cf51192ddf36d842] name: "mahewar 2", email: "maheshwar.market@gmail.com", roleName: "branch_admin", branch: "6960b9b0cf51192ddf36d83a"
+[696159a96db6c15465c434d7] name: "cheak rider 2", email: "cheack2@gmail.com", roleName: "rider", branch: "6960b9b0cf51192ddf36d83a"
+[69617388caa90b6350bb5026] name: "asli rider", email: "asli.rider@gmail.com", roleName: "rider", branch: "6960b9b0cf51192ddf36d83a"
+[69618bf8b1b014a0a6c42e5c] name: "only cheack", email: "only.cheack@gmail.com", roleName: "rider", branch: "6960b9b0cf51192ddf36d83a"
+[6962004351a4989d65f4cbbb] name: "bittu rad", email: "bittu@gmail.com", roleName: "rider", branch: "6962003a51a4989d65f4cbb4"
+[69638d1c38e730c4a24ce3c7] name: "virat koli", email: "koli@gmail.com", roleName: "branch_admin", branch: "6962003a51a4989d65f4cbb4"
+[6964d2348a0818492888205e] name: "mr rider", email: "mr.rider@gmail.com", roleName: "rider", branch: "6960afd3cf51192ddf36d7e7"
+
+=== LATEST DRS RECORDS ===
+[DRS2601-0013] status: "scheduled", riderID: "6964d2348a0818492888205e", branchID: "6960afd3cf51192ddf36d7e7", createdAt: Sat Jan 24 2026 18:48:52 GMT+0530 (India Standard Time)
+[DRS2601-0012] status: "scheduled", riderID: "6964d2348a0818492888205e", branchID: "HEAD_OFFICE", createdAt: Sat Jan 24 2026 16:53:51 GMT+0530 (India Standard Time)
+[DRS2601-0011] status: "completed", riderID: "6964d2348a0818492888205e", branchID: "6960afd3cf51192ddf36d7e7", createdAt: Wed Jan 21 2026 02:50:38 GMT+0530 (India Standard Time)
+[DRS2601-0010] status: "completed", riderID: "6964d2348a0818492888205e", branchID: "6960afd3cf51192ddf36d7e7", createdAt: Mon Jan 12 2026 17:43:13 GMT+0530 (India Standard Time)
+[DRS2601-0009] status: "scheduled", riderID: "695cd5d5ca14f0b0695e2630", branchID: "HEAD_OFFICE", createdAt: Mon Jan 12 2026 11:42:56 GMT+0530 (India Standard Time)
+[DRS2601-0008] status: "in_progress", riderID: "69617388caa90b6350bb5026", branchID: "6960b9b0cf51192ddf36d83a", createdAt: Sat Jan 10 2026 22:10:36 GMT+0530 (India Standard Time)
+[DRS2601-0007] status: "completed", riderID: "696159a96db6c15465c434d7", branchID: "6960b9b0cf51192ddf36d83a", createdAt: Sat Jan 10 2026 03:03:09 GMT+0530 (India Standard Time)
+[DRS2601-0006] status: "deleted", riderID: "696164f37789de9668cb4686", branchID: "6960b9b0cf51192ddf36d83a", createdAt: Sat Jan 10 2026 02:01:06 GMT+0530 (India Standard Time)
+[DRS2601-0005] status: "completed", riderID: "696159a96db6c15465c434d7", branchID: "6960b9b0cf51192ddf36d83a", createdAt: Sat Jan 10 2026 01:32:45 GMT+0530 (India Standard Time)
+[DRS2601-0004] status: "completed", riderID: "695cd5d5ca14f0b0695e2630", branchID: "HEAD_OFFICE", createdAt: Wed Jan 07 2026 15:52:43 GMT+0530 (India Standard Time)
+[DRS2601-0003] status: "completed", riderID: "695cd5d5ca14f0b0695e2630", branchID: "HEAD_OFFICE", createdAt: Wed Jan 07 2026 15:51:23 GMT+0530 (India Standard Time)
+[DRS2601-0002] status: "completed", riderID: "695e1fb0881460fe276b4c35", branchID: "HEAD_OFFICE", createdAt: Wed Jan 07 2026 15:42:14 GMT+0530 (India Standard Time)
+[DRS2601-0001] status: "completed", riderID: "695cd5d5ca14f0b0695e2630", branchID: "HEAD_OFFICE", createdAt: Wed Jan 07 2026 14:35:11 GMT+0530 (India Standard Time)

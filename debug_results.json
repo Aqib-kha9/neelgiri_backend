@@ -1,0 +1,66 @@
+[
+  {
+    "name": "Delivery Partner",
+    "id": "695cd5d5ca14f0b0695e262d",
+    "email": "partner@delivery.com",
+    "parentPartner": null,
+    "branches": [
+      {
+        "name": "mahewar 1 (kila)",
+        "id": "6960afd3cf51192ddf36d7e7"
+      },
+      {
+        "name": "mahewar 2(main market)",
+        "id": "6960b9b0cf51192ddf36d83a"
+      }
+    ],
+    "shipmentsFound": 3,
+    "totalShipmentsAnyStatus": 7,
+    "error": null,
+    "effectivePartnerId": "695cd5d5ca14f0b0695e262d",
+    "branchCount": 2,
+    "query": "{\"destinationBranch\":{\"$in\":[\"6960afd3cf51192ddf36d7e7\",\"6960b9b0cf51192ddf36d83a\"]},\"status\":{\"$in\":[\"not_scheduled\",\"scheduled\",\"in_progress\",\"paused\",\"complete\"]}}"
+  },
+  {
+    "name": "Karahi Post Partner (451220)",
+    "id": "6960a5dcea995d0a4a0d48e6",
+    "email": "sdu3.sd@gmail.com",
+    "parentPartner": null,
+    "branches": [],
+    "shipmentsFound": 0,
+    "totalShipmentsAnyStatus": 0,
+    "error": "No branches found",
+    "effectivePartnerId": "6960a5dcea995d0a4a0d48e6",
+    "branchCount": 0
+  },
+  {
+    "name": "Mahesh Main (89556)",
+    "id": "6960a623ea995d0a4a0d48fe",
+    "email": "maisar@gmail.com",
+    "parentPartner": null,
+    "branches": [],
+    "shipmentsFound": 0,
+    "totalShipmentsAnyStatus": 0,
+    "error": "No branches found",
+    "effectivePartnerId": "6960a623ea995d0a4a0d48fe",
+    "branchCount": 0
+  },
+  {
+    "name": "Badwah Partner, khargone-mp (451111)",
+    "id": "6960a6a7ea995d0a4a0d4916",
+    "email": "badwah@gmail.com",
+    "parentPartner": null,
+    "branches": [
+      {
+        "name": "jay stambh bhdwa",
+        "id": "6962003a51a4989d65f4cbb4"
+      }
+    ],
+    "shipmentsFound": 0,
+    "totalShipmentsAnyStatus": 0,
+    "error": null,
+    "effectivePartnerId": "6960a6a7ea995d0a4a0d4916",
+    "branchCount": 1,
+    "query": "{\"destinationBranch\":{\"$in\":[\"6962003a51a4989d65f4cbb4\"]},\"status\":{\"$in\":[\"not_scheduled\",\"scheduled\",\"in_progress\",\"paused\",\"complete\"]}}"
+  }
+]
