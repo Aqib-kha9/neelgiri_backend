@@ -14,6 +14,7 @@ const pincodeSchema = new mongoose.Schema({
     isServiceable: { type: Boolean, default: false }, // Global Serviceability (Super Admin)
     isActiveForBranch: { type: Boolean, default: true }, // Local Serviceability (Partner/Branch Admin)
     isODA: { type: Boolean, default: false },
+    isMetro: { type: Boolean, default: false },
     transitDays: { type: Number, default: 3 },
     latitude: { type: Number },
     longitude: { type: Number },

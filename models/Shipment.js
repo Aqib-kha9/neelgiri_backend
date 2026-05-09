@@ -89,6 +89,38 @@ const shipmentSchema = new mongoose.Schema({
         timestamp: { type: Date, default: Date.now },
         remark: String
     }],
+    chargeableWeight: {
+        type: Number,
+        default: 0
+    },
+    baseFreight: {
+        type: Number,
+        default: 0
+    },
+    fuelSurcharge: {
+        type: Number,
+        default: 0
+    },
+    fovCharge: {
+        type: Number,
+        default: 0
+    },
+    odaCharge: {
+        type: Number,
+        default: 0
+    },
+    codCharge: {
+        type: Number,
+        default: 0
+    },
+    taxAmount: {
+        type: Number,
+        default: 0
+    },
+    totalAmount: {
+        type: Number,
+        default: 0
+    },
     deliveredAt: {
         type: Date
     },

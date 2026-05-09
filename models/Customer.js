@@ -4,7 +4,10 @@ const receiverSchema = new mongoose.Schema({
     id: String, // Could be UUID or shortid
     name: String,
     address: String,
+    address2: String,
+    landmark: String,
     city: String,
+    state: String,
     pincode: String,
     mobileNo: String,
     email: String
@@ -14,10 +17,14 @@ const pickupLocationSchema = new mongoose.Schema({
     id: String,
     name: String,
     address: String,
+    address2: String,
+    landmark: String,
     city: String,
+    state: String,
     pincode: String,
     contactPerson: String,
-    mobileNo: String
+    mobileNo: String,
+    email: String
 });
 
 const customerSchema = new mongoose.Schema({

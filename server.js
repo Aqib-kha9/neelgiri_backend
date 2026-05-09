@@ -36,6 +36,7 @@ app.use('/api/bags', require('./routes/bagRoutes'));
 app.use('/api/customers', require('./routes/customerRoutes'));
 app.use('/api/rates', require('./routes/rateRoutes'));
 app.use('/api/pincodes', require('./routes/pincodeRoutes'));
+app.use('/api/places', require('./routes/placesRoutes'));
 
 app.get('/', (req, res) => {
     res.send('Delivery API is running...');

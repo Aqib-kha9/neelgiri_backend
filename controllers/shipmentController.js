@@ -335,8 +335,22 @@ exports.getShipments = async (req, res) => {
         const { status, awb } = req.query;
         let query = {};
 
-        // Branch Scoping
-        if (req.user.branchId) {
+        // --- CUSTOMER PORTAL SCOPING ---
+        // Resolve role name (populated or raw ID)
+        let effectiveRole = null;
+        if (req.user.role && req.user.role.name) {
+            effectiveRole = req.user.role.name;
+        } else if (req.user.role) {
+            const roleDoc = await Role.findById(req.user.role);
+            if (roleDoc) effectiveRole = roleDoc.name;
+        }
+
+        if (effectiveRole === 'customer') {
+            // Customer sees ONLY their own bookings created via portal
+            query.createdBy = req.user._id;
+            query.originType = 'customer_portal';
+        } else if (req.user.branchId) {
+            // Branch Scoping for branch staff
             query.$or = [
                 { currentBranch: req.user.branchId },
                 { destinationBranch: req.user.branchId, status: 'not_scheduled' }
@@ -553,24 +567,42 @@ exports.getShipmentTracking = async (req, res) => {
     }
 };
 
+const { calculateFreight } = require('../utils/pricingCalculator');
+
 // @desc    Create Booking (Customer Portal)
 // @route   POST /api/shipments/book
 // @access  Private
 exports.createBooking = async (req, res) => {
     try {
-        const { receiver, weight, dimensions, contents, paymentMode, codAmount, declaredValue, mode } = req.body;
+        const { sender, receiver, weight, dimensions, contents, paymentMode, codAmount, declaredValue, mode } = req.body;
+
+        const effectiveSender = sender || {
+            name: req.user.name,
+            phone: req.user.phone || '',
+            address: req.user.address || '',
+            pincode: req.user.pincode || '',
+            email: req.user.email
+        };
+
+        // 1. Calculate Costs using Professional Pricing Engine
+        const pricing = await calculateFreight({
+            weight,
+            length: dimensions?.length || 0,
+            breadth: dimensions?.width || 0,
+            height: dimensions?.height || 0,
+            serviceType: mode || 'SURFACE',
+            sourcePincode: effectiveSender.pincode,
+            destPincode: receiver.pincode,
+            declaredValue: declaredValue || 0,
+            customerType: req.user.customerType || 'CUSTOMER',
+            isCOD: paymentMode.toLowerCase() === 'cod'
+        });
 
         const awb = `AWB${Date.now()}${Math.floor(Math.random() * 100)}`;
         
         const shipment = new Shipment({
             awb,
-            sender: {
-                name: req.user.name,
-                phone: req.user.phone || '',
-                address: req.user.address || '',
-                pincode: req.user.pincode || '',
-                email: req.user.email
-            },
+            sender: effectiveSender,
             receiver,
             weight,
             dimensions,
@@ -581,18 +613,43 @@ exports.createBooking = async (req, res) => {
             status: 'not_scheduled',
             originType: 'customer_portal',
             createdBy: req.user._id,
+            
+            // Pricing Data
+            chargeableWeight: pricing.chargeableWeight,
+            baseFreight: pricing.baseFreight,
+            fuelSurcharge: pricing.fuelSurcharge,
+            fovCharge: pricing.fovCharge,
+            odaCharge: pricing.odaSurcharge || 0,
+            codCharge: pricing.codCharge || 0,
+            taxAmount: pricing.gstAmount,
+            totalAmount: pricing.totalAmount,
+
             history: [{
                 status: 'not_scheduled',
                 timestamp: new Date(),
                 updatedBy: req.user._id,
-                remark: 'Booked via Customer Portal'
+                remark: 'Booked via Customer Portal (Automatic Pricing Applied)'
             }]
         });
 
         await shipment.save();
-        res.status(201).json({ message: 'Booking successful', awb: shipment.awb, shipment });
+        res.status(201).json({ 
+            message: 'Booking successful', 
+            awb: shipment.awb, 
+            shipment,
+            pricing: {
+                baseFreight: shipment.baseFreight,
+                fuelSurcharge: pricing.fuelSurcharge || 0,
+                odaSurcharge: pricing.odaSurcharge || 0,
+                insuranceAmount: pricing.fovCharge || 0,
+                codCharge: pricing.codCharge || 0,
+                taxAmount: shipment.taxAmount,
+                netAmount: shipment.totalAmount,
+                chargeableWeight: shipment.chargeableWeight
+            }
+        });
     } catch (error) {
         console.error('Error creating customer booking:', error);
-        res.status(500).json({ message: 'Server Error creating booking' });
+        res.status(500).json({ message: error.message || 'Server Error creating booking' });
     }
 };

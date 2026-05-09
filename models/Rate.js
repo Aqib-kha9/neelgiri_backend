@@ -6,15 +6,9 @@ const slabSchema = new mongoose.Schema({
     maxWeight: { type: Number, required: true },
     rate: { type: Number, required: true },
     rateType: { type: String, enum: ['FIXED', 'PER_KG'], default: 'PER_KG' }
-});
+}, { toJSON: { virtuals: true }, toObject: { virtuals: true } });
 
-const zoneRateSchema = new mongoose.Schema({
-    fromZone: String,
-    toZone: String,
-    rate: Number,
-    transitDays: Number,
-    isActive: { type: Boolean, default: true }
-});
+
 
 const rateSchema = new mongoose.Schema({
     name: { type: String, required: true },
@@ -22,15 +16,16 @@ const rateSchema = new mongoose.Schema({
     serviceType: { type: String, enum: ['SURFACE', 'AIR', 'EXPRESS', 'ALL'], default: 'SURFACE' },
     paymentMode: { type: String, enum: ['PREPAID', 'COD', 'CREDIT', 'ALL'], default: 'ALL' },
     volumetricDivisor: { type: Number, default: 5000 },
+    vehicleType: { type: String, default: '' },
     odaCharge: { type: Number, default: 0 },
     
     slabs: [slabSchema],
-    zones: [zoneRateSchema],
     
     fuelSurcharge: {
         percentage: { type: Number, default: 0 },
         minAmount: { type: Number, default: 0 },
-        maxAmount: { type: Number, default: 0 }
+        maxAmount: { type: Number, default: 0 },
+        applicableFrom: { type: Number, default: 0 }
     },
     
     fovCharge: {
@@ -39,9 +34,49 @@ const rateSchema = new mongoose.Schema({
         maxAmount: { type: Number, default: 0 }
     },
     
-    minCharge: {
-        amount: { type: Number, default: 0 }
+    codCharges: {
+        percentage: { type: Number, default: 0 },
+        minAmount: { type: Number, default: 0 },
+        fixedCharge: { type: Number, default: 0 }
     },
+    
+    minCharge: {
+        amount: { type: Number, default: 0 },
+        applicableZones: [String]
+    },
+
+    additionalCharges: [{
+        name: String,
+        type: { type: String, enum: ['PERCENTAGE', 'FIXED'] },
+        value: Number,
+        description: String
+    }],
+
+    restrictions: {
+        minWeight: { type: Number, default: 0 },
+        maxWeight: { type: Number, default: 0 },
+        allowedPackaging: [String],
+        prohibitedItems: [String],
+        specialInstructions: String
+    },
+
+    autoCalculate: {
+        enabled: { type: Boolean, default: true },
+        baseOn: { type: String, default: 'WEIGHT' },
+        rounding: { type: String, default: 'UP' },
+        roundingFactor: { type: Number, default: 0.5 }
+    },
+
+    // Production-Grade Distance Based Pricing
+    distanceBuckets: [{
+        name: String, // e.g., 'LOCAL', 'REGIONAL', 'NATIONAL'
+        minDistance: Number,
+        maxDistance: Number,
+        baseWeight: { type: Number, default: 0.5 }, // e.g., first 500g
+        baseRate: Number,
+        additionalWeight: { type: Number, default: 0.5 }, // e.g., next 500g
+        additionalRate: Number
+    }],
     
     validFrom: Date,
     validTo: Date,
@@ -51,6 +86,6 @@ const rateSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
     }
-}, { timestamps: true });
+}, { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } });
 
 module.exports = mongoose.model('Rate', rateSchema);

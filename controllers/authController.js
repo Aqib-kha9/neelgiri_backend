@@ -117,10 +117,17 @@ const loginUser = async (req, res) => {
                 const Customer = require('../models/Customer');
                 const customerProfile = await Customer.findOne({ userId: user._id });
                 if (customerProfile) {
+                    loginResponse.customerId = customerProfile._id;
                     loginResponse.city = customerProfile.city;
                     loginResponse.pincode = customerProfile.pincode;
                     loginResponse.phone = customerProfile.mobileNo;
                     loginResponse.address = `${customerProfile.address1}${customerProfile.address2 ? ', ' + customerProfile.address2 : ''}`;
+                    loginResponse.rateCard = customerProfile.rateCard;
+                    loginResponse.receivers = customerProfile.receivers || [];
+                    loginResponse.pickupLocations = customerProfile.pickupLocations || [];
+                    loginResponse.volumetricWeightDivisor = customerProfile.volumetricWeightDivisor || 5000;
+                    loginResponse.allowedServices = customerProfile.allowedServices || ['SURFACE', 'AIR'];
+                    loginResponse.billingType = customerProfile.billingType;
                 }
             }
 
@@ -212,10 +219,14 @@ const getUserProfile = asyncHandler(async (req, res) => {
             const Customer = require('../models/Customer');
             const customerProfile = await Customer.findOne({ userId: user._id });
             if (customerProfile) {
+                responseData.customerId = customerProfile._id;
                 responseData.city = customerProfile.city;
                 responseData.pincode = customerProfile.pincode;
                 responseData.phone = customerProfile.mobileNo;
                 responseData.address = `${customerProfile.address1}${customerProfile.address2 ? ', ' + customerProfile.address2 : ''}`;
+                responseData.rateCard = customerProfile.rateCard;
+                responseData.receivers = customerProfile.receivers || [];
+                responseData.pickupLocations = customerProfile.pickupLocations || [];
             }
         }
 

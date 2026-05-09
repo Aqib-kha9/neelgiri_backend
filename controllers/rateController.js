@@ -58,10 +58,21 @@ const deleteRate = asyncHandler(async (req, res) => {
     res.json({ message: 'Rate rule removed' });
 });
 
+const { calculateFreight } = require('../utils/pricingCalculator');
+
+// @desc    Calculate shipment quote
+// @route   POST /api/rates/calculate
+// @access  Private
+const calculateQuote = asyncHandler(async (req, res) => {
+    const quote = await calculateFreight(req.body);
+    res.json(quote);
+});
+
 module.exports = {
     getRates,
     createRate,
     getRateById,
     updateRate,
-    deleteRate
+    deleteRate,
+    calculateQuote
 };

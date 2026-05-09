@@ -1,0 +1,15 @@
+Connected to DB
+
+--- SERVICEABLE PINCODES ---
+Pincode: 171001, City: Busstand SO, Zone: NORTH, Branch: 6960afd3cf51192ddf36d7e7
+Pincode: 171001, City: CPRI SO, Zone: NORTH, Branch: 6960afd3cf51192ddf36d7e7
+Pincode: 171001, City: Shimla GPO, Zone: NORTH, Branch: 6960afd3cf51192ddf36d7e7
+Pincode: 171001, City: Shimla High Court SO, Zone: NORTH, Branch: 6960afd3cf51192ddf36d7e7
+Pincode: 246721, City: Maheswari Nagla BO, Zone: NORTH, Branch: 6960b9b0cf51192ddf36d83a
+
+--- CUSTOMERS & RATE CARDS ---
+Customer: DISHANT MAHAJAN, Email: aqib@gmail.com, RateCard: NONE
+
+--- ALL RATE CARDS ---
+ID: 69aef124130ec5e3d9de9647, Name: Express Air Freight
+ID: 69aef124130ec5e3d9de963f, Name: Standard Corporate Rates

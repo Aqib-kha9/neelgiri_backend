@@ -34,7 +34,7 @@ const getCustomers = asyncHandler(async (req, res) => {
         return res.json([]);
     }
 
-    const customers = await Customer.find(query).sort({ createdAt: -1 });
+    const customers = await Customer.find(query).populate('rateCard', 'name serviceType').sort({ createdAt: -1 });
     res.json(customers);
 });
 
@@ -144,6 +144,11 @@ const updateCustomer = asyncHandler(async (req, res) => {
             }
         } else if (['branch_admin', 'branch', 'dispatcher'].includes(role.name)) {
             if (customer.branchId?.toString() !== req.user.branchId?.toString()) {
+                res.status(403);
+                throw new Error('Not authorized to edit this customer');
+            }
+        } else if (role.name === 'customer') {
+            if (customer.userId?.toString() !== req.user._id.toString()) {
                 res.status(403);
                 throw new Error('Not authorized to edit this customer');
             }
