@@ -574,14 +574,15 @@ const { calculateFreight } = require('../utils/pricingCalculator');
 // @access  Private
 exports.createBooking = async (req, res) => {
     try {
-        const { sender, receiver, weight, dimensions, contents, paymentMode, codAmount, declaredValue, mode } = req.body;
+        const { sender, receiver, weight, dimensions, contents, paymentMode, codAmount, declaredValue, mode, eWayBill } = req.body;
 
         const effectiveSender = sender || {
             name: req.user.name,
             phone: req.user.phone || '',
             address: req.user.address || '',
             pincode: req.user.pincode || '',
-            email: req.user.email
+            email: req.user.email,
+            gstin: ''
         };
 
         // 1. Calculate Costs using Professional Pricing Engine
@@ -594,8 +595,10 @@ exports.createBooking = async (req, res) => {
             sourcePincode: effectiveSender.pincode,
             destPincode: receiver.pincode,
             declaredValue: declaredValue || 0,
+            customerId: req.user._id,
             customerType: req.user.customerType || 'CUSTOMER',
-            isCOD: paymentMode.toLowerCase() === 'cod'
+            isCOD: paymentMode.toLowerCase() === 'cod',
+            insuranceRequested: (declaredValue > 0) // Auto-request insurance if value declared
         });
 
         const awb = `AWB${Date.now()}${Math.floor(Math.random() * 100)}`;
@@ -613,6 +616,10 @@ exports.createBooking = async (req, res) => {
             status: 'not_scheduled',
             originType: 'customer_portal',
             createdBy: req.user._id,
+            eWayBill: req.body.eWayBill,
+            senderInvoiceNo: req.body.senderInvoiceNo,
+            additionalDocNos: req.body.additionalDocNos,
+            attachments: req.body.attachments,
             
             // Pricing Data
             chargeableWeight: pricing.chargeableWeight,

@@ -1,3 +1,4 @@
+// server.js - Updated to include new shipment payment modes
 const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
@@ -24,6 +25,7 @@ const corsOptions = {
 // Middleware
 app.use(express.json());
 app.use(cors(corsOptions));
+app.use('/public', express.static('public'));
 
 // Routes
 app.use('/api/auth', authRoutes);

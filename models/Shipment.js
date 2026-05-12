@@ -12,15 +12,18 @@ const shipmentSchema = new mongoose.Schema({
         phone: String,
         address: String,
         pincode: String,
-        email: String
+        email: String,
+        gstin: String
     },
     receiver: {
         name: String,
         phone: String,
         address: String,
         pincode: String,
-        email: String
+        email: String,
+        gstin: String
     },
+    eWayBill: String,
     weight: {
         type: Number, // in kg
         default: 0
@@ -34,7 +37,7 @@ const shipmentSchema = new mongoose.Schema({
     declaredValue: Number,
     paymentMode: {
         type: String,
-        enum: ['prepaid', 'cod'],
+        enum: ['prepaid', 'cod', 'topay', 'TOPAY', 'credit', 'CREDIT'],
         default: 'prepaid'
     },
     codAmount: {
@@ -113,6 +116,13 @@ const shipmentSchema = new mongoose.Schema({
         type: Number,
         default: 0
     },
+    senderInvoiceNo: String,
+    additionalDocNos: [String],
+    attachments: [{
+        url: String,
+        type: { type: String, enum: ['parcel_photo', 'document_scan', 'invoice_scan'] },
+        uploadedAt: { type: Date, default: Date.now }
+    }],
     taxAmount: {
         type: Number,
         default: 0

@@ -1,5 +1,6 @@
 const Rate = require('../models/Rate');
 const Pincode = require('../models/Pincode');
+const Customer = require('../models/Customer');
 
 /**
  * Haversine formula to calculate distance between two points in KM
@@ -34,6 +35,7 @@ const calculateFreight = async ({
     declaredValue = 0,
     isCOD = false,
     insuranceRequested = false,
+    customerId = null,
     customerType = 'CUSTOMER', // Used for auto-finding rate
     serviceType = 'SURFACE'    // Used for auto-finding rate
 }) => {
@@ -161,13 +163,26 @@ const calculateFreight = async ({
         const odaSurcharge = (origin.isODA || dest.isODA) ? (rateCard.odaCharge || 0) : 0;
 
         // FOV/Insurance
-        const fovCharge = insuranceRequested ? Math.min(
-            Math.max(
-                (declaredValue * (rateCard.fovCharge?.percentage || 0)) / 100,
-                rateCard.fovCharge?.minAmount || 0
-            ),
-            rateCard.fovCharge?.maxAmount || Infinity
-        ) : 0;
+        let fovCharge = 0;
+        if (insuranceRequested) {
+            let fovPercentage = rateCard.fovCharge?.percentage || 0;
+            
+            // Override with customer-specific FOV percentage if available
+            if (customerId) {
+                const customer = await Customer.findById(customerId);
+                if (customer && customer.fovPercentage > 0) {
+                    fovPercentage = customer.fovPercentage;
+                }
+            }
+
+            fovCharge = Math.min(
+                Math.max(
+                    (declaredValue * fovPercentage) / 100,
+                    rateCard.fovCharge?.minAmount || 0
+                ),
+                rateCard.fovCharge?.maxAmount || Infinity
+            );
+        }
 
         // COD Charges
         const codCharge = isCOD ? Math.max(

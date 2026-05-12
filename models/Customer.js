@@ -52,6 +52,7 @@ const customerSchema = new mongoose.Schema({
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
     fuelCharges: { type: Number, default: 0 },
     fovCharges: { type: Number, default: 0 },
+    fovPercentage: { type: Number, default: 0 },
     quotationType: String,
     awt: { type: Number, default: 0 },
     category: String,
