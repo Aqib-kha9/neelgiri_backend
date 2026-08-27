@@ -9,7 +9,13 @@ const pincodeSchema = new mongoose.Schema({
     branchId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Branch',
-        required: false // Optional until a branch activates it
+        required: false // Commercial/tenant ownership and existing claim workflow
+    },
+    locationId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Location',
+        required: false,
+        default: null // Operational facility responsible for pickup/delivery execution
     },
     isServiceable: { type: Boolean, default: false }, // Global Serviceability (Super Admin)
     isActiveForBranch: { type: Boolean, default: true }, // Local Serviceability (Partner/Branch Admin)
@@ -24,5 +30,9 @@ const pincodeSchema = new mongoose.Schema({
         ref: 'User'
     }
 }, { timestamps: true });
+
+pincodeSchema.index({ pincode: 1 });
+pincodeSchema.index({ branchId: 1, locationId: 1 });
+pincodeSchema.index({ locationId: 1, isServiceable: 1 });
 
 module.exports = mongoose.model('Pincode', pincodeSchema);

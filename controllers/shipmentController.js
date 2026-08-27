@@ -1,8 +1,17 @@
+const mongoose = require('mongoose');
 const Shipment = require('../models/Shipment');
 const Branch = require('../models/Branch');
+const Customer = require('../models/Customer');
 const Manifest = require('../models/Manifest');
 const Role = require('../models/Role'); // Import Role model
 const DRS = require('../models/DRS'); // Import DRS for sync
+const { autoRoute, findBranchForPincode } = require('../utils/autoRouter');
+const { generateManifestId } = require('../utils/idGenerator');
+const { logAudit } = require('../utils/auditLogger');
+const { notifyBookingConfirmed, notifyInTransit, notifyArrivedAtBranch } = require('../utils/notificationHelper');
+const { setSLA } = require('../utils/slaUtility');
+const { validateShipmentData, validateStatusTransition, getValidNextStatuses } = require('../utils/validationGuards');
+const { consumeAllocatedAwb } = require('../services/awbService');
 
 // @desc    Forward a Shipment (Counter Manifest Send)
 // @route   POST /api/shipments/forward
@@ -11,23 +20,76 @@ exports.forwardShipment = async (req, res) => {
     try {
         const { awb, destinationBranchId, receiver, weight, dimensions } = req.body;
 
-        if (!awb || !destinationBranchId) {
-            return res.status(400).json({ message: 'AWB and destination branch are required' });
+        if (!awb) {
+            return res.status(400).json({ message: 'AWB is required' });
         }
 
         const currentBranchId = req.user.branchId;
+        const sourceBranch = req.body.sourceBranchId || req.user.branchId;
+
+        // ─── AUTO-ROUTING INTEGRATION ───────────────────────────────
+        // If destinationBranchId is not provided, auto-determine from receiver pincode
+        let resolvedDestBranchId = destinationBranchId;
+        let routingInfo = null;
+        let autoRouteResult = null;
+
+        if (!resolvedDestBranchId && receiver && receiver.pincode) {
+            autoRouteResult = await autoRoute(
+                req.body.originPincode || (req.user.pincode || ''),
+                receiver.pincode
+            );
+
+            if (autoRouteResult.serviceable && autoRouteResult.destinationBranch) {
+                resolvedDestBranchId = autoRouteResult.destinationBranch._id;
+                routingInfo = {
+                    originPincode: autoRouteResult.originPincode,
+                    destinationPincode: autoRouteResult.destinationPincode,
+                    isLocal: autoRouteResult.isLocal,
+                    isODA: autoRouteResult.isODA,
+                    estimatedTransitDays: autoRouteResult.estimatedTransitDays,
+                    routeId: autoRouteResult.route ? autoRouteResult.route._id : null,
+                    autoRouted: true
+                };
+            } else {
+                return res.status(400).json({
+                    message: 'Cannot auto-route shipment. No destination branch provided and auto-routing failed.',
+                    autoRouteErrors: autoRouteResult.errors
+                });
+            }
+        } else if (resolvedDestBranchId && receiver && receiver.pincode) {
+            // Even if destination is provided, enrich routingInfo
+            const destBranchResult = await findBranchForPincode(receiver.pincode);
+            if (destBranchResult.found) {
+                routingInfo = {
+                    originPincode: req.body.originPincode || (req.user.pincode || ''),
+                    destinationPincode: receiver.pincode,
+                    isLocal: destBranchResult.branch._id.toString() === sourceBranch.toString(),
+                    isODA: destBranchResult.isODA,
+                    estimatedTransitDays: destBranchResult.transitDays,
+                    routeId: null,
+                    autoRouted: false
+                };
+            }
+        }
+
+        if (!resolvedDestBranchId) {
+            return res.status(400).json({ message: 'Destination branch is required (provide destinationBranchId or receiver.pincode for auto-routing)' });
+        }
 
         // Check if shipment exists
         let shipment = await Shipment.findOne({ awb });
 
         // Fetch Destination Branch Name for Remark
-        const destBranchDoc = await Branch.findById(destinationBranchId).select('name');
-        const destBranchName = destBranchDoc ? destBranchDoc.name : destinationBranchId;
+        const destBranchDoc = await Branch.findById(resolvedDestBranchId).select('name code');
+        const destBranchName = destBranchDoc ? destBranchDoc.name : resolvedDestBranchId;
+
+        // Generate proper manifest ID
+        const manifestId = generateManifestId();
 
         if (shipment) {
             // Update existing shipment
             shipment.status = 'forwarded';
-            shipment.destinationBranch = destinationBranchId;
+            shipment.destinationBranch = resolvedDestBranchId;
             shipment.currentBranch = null; // In transit
 
             // Update fields if provided
@@ -35,13 +97,28 @@ exports.forwardShipment = async (req, res) => {
             if (weight) shipment.weight = weight;
             if (dimensions) shipment.dimensions = { ...shipment.dimensions, ...dimensions };
 
-            const sourceBranch = req.body.sourceBranchId || req.user.branchId;
+            // Set routing info
+            if (routingInfo) {
+                shipment.routingInfo = routingInfo;
+            }
+
+            // Add journey entry
+            shipment.journey = shipment.journey || [];
+            shipment.journey.push({
+                leg: shipment.journey.length + 1,
+                type: 'manifest',
+                fromBranch: sourceBranch,
+                toBranch: resolvedDestBranchId,
+                manifestId: manifestId,
+                timestamp: new Date(),
+                remark: `Forwarded to ${destBranchName}`
+            });
 
             // Create Manifest for Counter Manifest
             const manifest = new Manifest({
-                manifestId: `MFD${Date.now()}`,
+                manifestId,
                 sourceBranch: sourceBranch,
-                destinationBranch: destinationBranchId,
+                destinationBranch: resolvedDestBranchId,
                 shipments: [shipment._id],
                 status: 'complete',
                 createdBy: req.user._id,
@@ -75,7 +152,15 @@ exports.forwardShipment = async (req, res) => {
             });
             await shipment.save();
 
-            return res.json({ message: 'Shipment forwarded and manifest created', shipment, manifestId: manifest.manifestId });
+            logAudit(req, 'SHIPMENT_FORWARD', `Forwarded shipment ${awb} to ${destBranchName} via manifest ${manifest.manifestId}`);
+
+            return res.json({
+                message: 'Shipment forwarded and manifest created',
+                shipment,
+                manifestId: manifest.manifestId,
+                autoRouted: routingInfo ? routingInfo.autoRouted : false,
+                routingInfo
+            });
         } else {
             // Create new shipment and forward
             shipment = new Shipment({
@@ -84,15 +169,25 @@ exports.forwardShipment = async (req, res) => {
                 weight,
                 dimensions,
                 status: 'not_scheduled',
-                destinationBranch: destinationBranchId,
+                destinationBranch: resolvedDestBranchId,
                 currentBranch: null, // In transit
                 originType: 'manual_forward',
-                originBranchId: req.body.sourceBranchId || req.user.branchId,
+                originBranchId: sourceBranch,
                 createdBy: req.user._id,
+                routingInfo: routingInfo || undefined,
+                journey: [{
+                    leg: 1,
+                    type: 'manifest',
+                    fromBranch: sourceBranch,
+                    toBranch: resolvedDestBranchId,
+                    manifestId: manifestId,
+                    timestamp: new Date(),
+                    remark: `Created and forwarded to ${destBranchName}`
+                }],
                 history: [{
                     status: 'not_scheduled',
                     timestamp: new Date(),
-                    branchId: req.body.sourceBranchId || req.user.branchId,
+                    branchId: sourceBranch,
                     updatedBy: req.user._id,
                     remark: `Created and forwarded to branch ${destBranchName}`
                 }]
@@ -100,11 +195,10 @@ exports.forwardShipment = async (req, res) => {
 
             await shipment.save();
 
-            const sourceBranch = req.body.sourceBranchId || req.user.branchId;
             const manifest = new Manifest({
-                manifestId: `MFD${Date.now()}`,
+                manifestId,
                 sourceBranch: sourceBranch,
-                destinationBranch: destinationBranchId,
+                destinationBranch: resolvedDestBranchId,
                 shipments: [shipment._id],
                 status: 'complete',
                 createdBy: req.user._id,
@@ -123,7 +217,15 @@ exports.forwardShipment = async (req, res) => {
             });
             await manifest.save();
 
-            return res.status(201).json({ message: 'Shipment created, forwarded and manifested', shipment, manifestId: manifest.manifestId });
+            logAudit(req, 'SHIPMENT_FORWARD', `Created and forwarded shipment ${awb} to ${destBranchName} via manifest ${manifest.manifestId}`);
+
+            return res.status(201).json({
+                message: 'Shipment created, forwarded and manifested',
+                shipment,
+                manifestId: manifest.manifestId,
+                autoRouted: routingInfo ? routingInfo.autoRouted : false,
+                routingInfo
+            });
         }
 
     } catch (error) {
@@ -318,6 +420,10 @@ exports.inwardShipment = async (req, res) => {
             });
 
             await shipment.save();
+
+            // Fire-and-forget: notify customer of booking confirmation
+            notifyBookingConfirmed(shipment, req.user);
+
             return res.status(201).json({ message: 'Shipment created and inwarded', shipment });
         }
 
@@ -333,60 +439,41 @@ exports.inwardShipment = async (req, res) => {
 exports.getShipments = async (req, res) => {
     try {
         const { status, awb } = req.query;
-        let query = {};
+        const roleName = req.user?.role?.name || req.user?.role;
+        const query = {};
 
-        // --- CUSTOMER PORTAL SCOPING ---
-        // Resolve role name (populated or raw ID)
-        let effectiveRole = null;
-        if (req.user.role && req.user.role.name) {
-            effectiveRole = req.user.role.name;
-        } else if (req.user.role) {
-            const roleDoc = await Role.findById(req.user.role);
-            if (roleDoc) effectiveRole = roleDoc.name;
-        }
-
-        if (effectiveRole === 'customer') {
-            // Customer sees ONLY their own bookings created via portal
+        if (roleName === 'customer') {
             query.createdBy = req.user._id;
-            query.originType = 'customer_portal';
-        } else if (req.user.branchId) {
-            // Branch Scoping for branch staff
+        } else if (roleName === 'partner_admin' || roleName === 'partner') {
             query.$or = [
-                { currentBranch: req.user.branchId },
-                { destinationBranch: req.user.branchId, status: 'not_scheduled' }
+                { partnerId: req.user._id },
+                { branchId: { $in: await Branch.find({ partnerId: req.user._id }).distinct('_id') } }
             ];
+        } else if (req.user.branchId) {
+            query.$or = [
+                { branchId: req.user.branchId },
+                { originBranchId: req.user.branchId },
+                { currentBranch: req.user.branchId },
+                { destinationBranch: req.user.branchId }
+            ];
+        } else if (roleName !== 'super_admin') {
+            query._id = null;
         }
 
-        // Status Filter
         if (status) {
-            const statusArray = status.split(',');
-            const statusQuery = statusArray.length > 1 ? { status: { $in: statusArray } } : { status };
-
-            if (query.$or) {
-                // If we already have a branch filter, we need to wrap the status in an $and
-                // BUT wait, if we have $or logic for branch permissions, simply adding it to the root object might break the OR?
-                // Mongoose/Mongo logic: { $or: [...], status: ... } implies ($or conditions) AND status. This is correct.
-                // However, let's overlap the status query into the main query object safely.
-                Object.assign(query, statusQuery);
-            } else {
-                query = { ...query, ...statusQuery };
-            }
-
-            // CRITICAL FIX: For completed shipments, ONLY show manually/directly completed ones
-            // Rider-completed shipments should ONLY appear in DRS History
+            const statusArray = status.split(',').filter(Boolean);
+            query.status = statusArray.length > 1 ? { $in: statusArray } : statusArray[0];
             if (statusArray.includes('complete')) {
                 query.completedVia = { $in: ['manual', 'branch_direct'] };
             }
         }
 
-        // AWB Search
         if (awb) {
             query.awb = { $regex: awb, $options: 'i' };
         }
 
         const shipments = await Shipment.find(query).sort({ updatedAt: -1 });
         res.json(shipments);
-
     } catch (error) {
         console.error('Error fetching shipments:', error);
         res.status(500).json({ message: 'Server Error fetching shipments' });
@@ -398,7 +485,25 @@ exports.getShipments = async (req, res) => {
 // @access  Private
 exports.getShipmentByAWB = async (req, res) => {
     try {
-        const shipment = await Shipment.findOne({ awb: req.params.awb });
+        const roleName = req.user?.role?.name || req.user?.role;
+        const query = { awb: req.params.awb };
+
+        if (roleName === 'customer') {
+            query.createdBy = req.user._id;
+        } else if (roleName === 'partner_admin' || roleName === 'partner') {
+            query.partnerId = req.user._id;
+        } else if (req.user.branchId) {
+            query.$or = [
+                { branchId: req.user.branchId },
+                { originBranchId: req.user.branchId },
+                { currentBranch: req.user.branchId },
+                { destinationBranch: req.user.branchId }
+            ];
+        } else if (roleName !== 'super_admin') {
+            query._id = null;
+        }
+
+        const shipment = await Shipment.findOne(query);
         if (!shipment) {
             return res.status(404).json({ message: 'Shipment not found' });
         }
@@ -569,59 +674,300 @@ exports.getShipmentTracking = async (req, res) => {
 
 const { calculateFreight } = require('../utils/pricingCalculator');
 
+const bookingResponse = (shipment, replayed = false) => ({
+    message: replayed ? 'Existing booking returned' : 'Booking successful',
+    awb: shipment.awb,
+    shipment,
+    idempotentReplay: replayed,
+    autoRouted: Boolean(shipment.routingInfo?.autoRouted),
+    routingInfo: shipment.routingInfo,
+    serviceability: { serviceable: true, errors: [], warnings: [] },
+    pricing: {
+        baseFreight: shipment.baseFreight || 0,
+        fuelSurcharge: shipment.fuelSurcharge || 0,
+        odaSurcharge: shipment.odaCharge || 0,
+        insuranceAmount: shipment.fovCharge || 0,
+        codCharge: shipment.codCharge || 0,
+        taxAmount: shipment.taxAmount || 0,
+        netAmount: shipment.totalAmount || 0,
+        chargeableWeight: shipment.chargeableWeight || 0
+    }
+});
+
 // @desc    Create Booking (Customer Portal)
 // @route   POST /api/shipments/book
 // @access  Private
 exports.createBooking = async (req, res) => {
+    let bookingSession;
+    let normalizedIdempotencyKey = '';
     try {
-        const { sender, receiver, weight, dimensions, contents, paymentMode, codAmount, declaredValue, mode, eWayBill } = req.body;
-
-        const effectiveSender = sender || {
-            name: req.user.name,
-            phone: req.user.phone || '',
-            address: req.user.address || '',
-            pincode: req.user.pincode || '',
-            email: req.user.email,
-            gstin: ''
-        };
-
-        // 1. Calculate Costs using Professional Pricing Engine
-        const pricing = await calculateFreight({
-            weight,
-            length: dimensions?.length || 0,
-            breadth: dimensions?.width || 0,
-            height: dimensions?.height || 0,
-            serviceType: mode || 'SURFACE',
-            sourcePincode: effectiveSender.pincode,
-            destPincode: receiver.pincode,
-            declaredValue: declaredValue || 0,
-            customerId: req.user._id,
-            customerType: req.user.customerType || 'CUSTOMER',
-            isCOD: paymentMode.toLowerCase() === 'cod',
-            insuranceRequested: (declaredValue > 0) // Auto-request insurance if value declared
-        });
-
-        const awb = `AWB${Date.now()}${Math.floor(Math.random() * 100)}`;
-        
-        const shipment = new Shipment({
-            awb,
-            sender: effectiveSender,
+        const {
+            sender,
             receiver,
             weight,
             dimensions,
             contents,
-            paymentMode: paymentMode.toLowerCase(),
+            packageType,
+            category,
+            isFragile,
+            insuranceRequired,
+            fovPercentage,
+            paymentMode,
             codAmount,
             declaredValue,
-            status: 'not_scheduled',
-            originType: 'customer_portal',
+            mode,
+            customerId,
+            senderInvoiceNo,
+            eWayBill,
+            additionalDocNos,
+            attachments,
+            termsAccepted,
+            termsVersion,
+            idempotencyKey
+        } = req.body || {};
+        const roleName = req.user?.role?.name || req.user?.role;
+        const normalizedPaymentMode = String(paymentMode || '').trim().toLowerCase();
+        const normalizedMode = String(mode || 'SURFACE').trim().toUpperCase();
+        const normalizedPackageType = String(packageType || 'BOX').trim().toUpperCase();
+        const normalizedWeight = Number(weight);
+        const normalizedDeclaredValue = Number(declaredValue || 0);
+        const normalizedCodAmount = normalizedPaymentMode === 'cod' ? Number(codAmount) : 0;
+        const normalizedFovPercentage = insuranceRequired === true && fovPercentage !== undefined && fovPercentage !== null
+            ? Number(fovPercentage)
+            : null;
+        const normalizedDimensions = {
+            length: Number(dimensions?.length || 0),
+            width: Number(dimensions?.width ?? dimensions?.breadth ?? 0),
+            height: Number(dimensions?.height || 0)
+        };
+        normalizedIdempotencyKey = String(idempotencyKey || '').trim();
+
+        if (!/^[A-Za-z0-9._:-]{8,128}$/.test(normalizedIdempotencyKey)) {
+            return res.status(400).json({
+                message: 'A valid idempotency key (8-128 safe characters) is required'
+            });
+        }
+
+        const existingBooking = await Shipment.findOne({
             createdBy: req.user._id,
-            eWayBill: req.body.eWayBill,
-            senderInvoiceNo: req.body.senderInvoiceNo,
-            additionalDocNos: req.body.additionalDocNos,
-            attachments: req.body.attachments,
-            
-            // Pricing Data
+            bookingIdempotencyKey: normalizedIdempotencyKey
+        });
+        if (existingBooking) {
+            return res.status(200).json(bookingResponse(existingBooking, true));
+        }
+
+        const customerQuery = roleName === 'customer'
+            ? { userId: req.user._id }
+            : customerId
+                ? { _id: customerId }
+                : { userId: req.user._id };
+        const customer = await Customer.findOne(customerQuery)
+            .select('_id userId branchId partnerId customerType status name mobileNo address1 pincode email gstin rateCard allowedServices')
+            .lean();
+
+        if (roleName === 'customer' && (!customer || customer.status === 'inactive')) {
+            return res.status(403).json({ message: 'An active customer profile is required to create a booking' });
+        }
+        if (customerId && !customer) {
+            return res.status(404).json({ message: 'Customer profile not found' });
+        }
+        if (customer && customer.status === 'inactive') {
+            return res.status(400).json({ message: 'Selected customer profile is inactive' });
+        }
+        if (customer && roleName !== 'customer') {
+            const effectivePartnerId = req.user.parentPartner || req.user.createdBy ||
+                (['partner_admin', 'partner'].includes(roleName) ? req.user._id : null);
+            if (effectivePartnerId && customer.partnerId && customer.partnerId.toString() !== effectivePartnerId.toString()) {
+                return res.status(403).json({ message: 'Selected customer is outside your partner scope' });
+            }
+            if (req.user.branchId && customer.branchId && customer.branchId.toString() !== req.user.branchId.toString()) {
+                return res.status(403).json({ message: 'Selected customer is outside your branch scope' });
+            }
+        }
+
+        const effectiveSender = sender || {
+            name: customer?.name || req.user.name,
+            phone: customer?.mobileNo || req.user.phone || '',
+            address: customer?.address1 || req.user.address || '',
+            pincode: customer?.pincode || req.user.pincode || '',
+            email: customer?.email || req.user.email,
+            gstin: customer?.gstin || ''
+        };
+
+        if (attachments !== undefined && !Array.isArray(attachments)) {
+            return res.status(400).json({ message: 'Attachments must be an array' });
+        }
+        if (Array.isArray(attachments) && attachments.some((attachment) => !attachment || typeof attachment !== 'object' || Array.isArray(attachment))) {
+            return res.status(400).json({ message: 'Each attachment must be an object' });
+        }
+        const normalizedAttachments = Array.isArray(attachments)
+            ? attachments.map((attachment) => ({
+                url: String(attachment.url || '').trim(),
+                type: String(attachment.type || '').trim().toLowerCase(),
+                originalname: attachment.originalname
+                    ? String(attachment.originalname).trim().slice(0, 255)
+                    : undefined,
+                mimetype: attachment.mimetype
+                    ? String(attachment.mimetype).trim().toLowerCase()
+                    : undefined,
+                size: attachment.size === undefined || attachment.size === null
+                    ? undefined
+                    : Number(attachment.size)
+            }))
+            : attachments;
+        const normalizedAdditionalDocNos = Array.isArray(additionalDocNos)
+            ? additionalDocNos
+                .map((value) => String(value || '').trim())
+                .filter(Boolean)
+                .slice(0, 20)
+            : [];
+        const canonicalSender = {
+            ...effectiveSender,
+            name: String(effectiveSender.name || '').trim(),
+            phone: String(effectiveSender.phone || '').trim(),
+            address: String(effectiveSender.address || '').trim(),
+            pincode: String(effectiveSender.pincode || '').trim(),
+            city: String(effectiveSender.city || '').trim(),
+            state: String(effectiveSender.state || '').trim(),
+            email: effectiveSender.email ? String(effectiveSender.email).trim().toLowerCase() : undefined,
+            gstin: effectiveSender.gstin ? String(effectiveSender.gstin).trim().toUpperCase() : undefined
+        };
+        const canonicalReceiver = {
+            ...receiver,
+            name: String(receiver?.name || '').trim(),
+            phone: String(receiver?.phone || '').trim(),
+            address: String(receiver?.address || '').trim(),
+            pincode: String(receiver?.pincode || '').trim(),
+            city: String(receiver?.city || '').trim(),
+            state: String(receiver?.state || '').trim(),
+            email: receiver?.email ? String(receiver.email).trim().toLowerCase() : undefined,
+            gstin: receiver?.gstin ? String(receiver.gstin).trim().toUpperCase() : undefined
+        };
+
+        if (customer?.allowedServices?.length > 0) {
+            const allowedServices = customer.allowedServices.map((service) => String(service).trim().toUpperCase());
+            if (!allowedServices.includes('ALL') && !allowedServices.includes(normalizedMode)) {
+                return res.status(403).json({ message: `${normalizedMode} service is not enabled for this customer` });
+            }
+        }
+
+        const validation = validateShipmentData({
+            sender: canonicalSender,
+            receiver: canonicalReceiver,
+            weight: normalizedWeight,
+            dimensions: normalizedDimensions,
+            contents: String(contents || '').trim(),
+            packageType: normalizedPackageType,
+            category: String(category || 'General').trim(),
+            mode: normalizedMode,
+            paymentMode: normalizedPaymentMode,
+            codAmount: normalizedCodAmount,
+            declaredValue: normalizedDeclaredValue,
+            insuranceRequired: insuranceRequired === true,
+            fovPercentage: normalizedFovPercentage,
+            eWayBill: eWayBill ? String(eWayBill).trim() : undefined,
+            attachments: normalizedAttachments,
+            termsAccepted,
+            termsVersion
+        });
+        if (!validation.valid) {
+            return res.status(400).json({
+                message: 'Shipment validation failed',
+                errors: validation.errors
+            });
+        }
+
+        const autoRouteResult = await autoRoute(canonicalSender.pincode, canonicalReceiver.pincode);
+        if (!autoRouteResult.serviceable || !autoRouteResult.originBranch || !autoRouteResult.destinationBranch) {
+            return res.status(400).json({
+                message: 'Shipment route is not serviceable',
+                errors: autoRouteResult.errors || ['No active route found for the supplied pincodes']
+            });
+        }
+
+        const originBranchId = autoRouteResult.originBranch._id;
+        const destinationBranchId = autoRouteResult.destinationBranch._id;
+        const routingInfo = {
+            originPincode: autoRouteResult.originPincode,
+            destinationPincode: autoRouteResult.destinationPincode,
+            isLocal: autoRouteResult.isLocal,
+            isODA: autoRouteResult.isODA,
+            estimatedTransitDays: autoRouteResult.estimatedTransitDays,
+            routeId: autoRouteResult.route ? autoRouteResult.route._id : null,
+            autoRouted: true
+        };
+
+        const pricing = await calculateFreight({
+            rateCardId: customer?.rateCard || undefined,
+            weight: normalizedWeight,
+            length: normalizedDimensions.length,
+            breadth: normalizedDimensions.width,
+            height: normalizedDimensions.height,
+            serviceType: normalizedMode,
+            sourcePincode: canonicalSender.pincode,
+            destPincode: canonicalReceiver.pincode,
+            declaredValue: normalizedDeclaredValue,
+            codAmount: normalizedCodAmount,
+            customerId: customer?._id,
+            customerType: 'CUSTOMER',
+            isCOD: normalizedPaymentMode === 'cod',
+            insuranceRequested: insuranceRequired === true,
+            fovPercentage: normalizedFovPercentage
+        });
+
+        const targetIds = [
+            req.user._id,
+            req.user.branchId,
+            req.user.parentPartner,
+            req.user.createdBy,
+            customer && customer._id,
+            customer && customer.branchId,
+            customer && customer.partnerId,
+            originBranchId,
+            destinationBranchId
+        ];
+
+        bookingSession = await mongoose.startSession();
+        bookingSession.startTransaction();
+        const issuedAwb = await consumeAllocatedAwb({ targetIds, session: bookingSession });
+        const awb = issuedAwb.awbNumber;
+        const slaConfig = setSLA({}, normalizedMode, autoRouteResult.estimatedTransitDays);
+        const originType = roleName === 'customer' ? 'customer_portal' : 'counter_inward';
+        const shipment = new Shipment({
+            awb,
+            sender: canonicalSender,
+            receiver: canonicalReceiver,
+            weight: normalizedWeight,
+            dimensions: normalizedDimensions,
+            contents: String(contents || '').trim(),
+            packageType: normalizedPackageType,
+            category: String(category || 'General').trim(),
+            isFragile: isFragile === true,
+            insuranceRequired: insuranceRequired === true,
+            fovPercentage: normalizedFovPercentage,
+            paymentMode: normalizedPaymentMode,
+            codAmount: normalizedCodAmount,
+            declaredValue: normalizedDeclaredValue,
+            status: 'not_scheduled',
+            originType,
+            originBranchId,
+            currentBranch: originBranchId,
+            destinationBranch: destinationBranchId,
+            branchId: customer?.branchId || req.user.branchId || originBranchId,
+            partnerId: customer?.partnerId || req.user.parentPartner || req.user.createdBy,
+            customerId: customer?._id || null,
+            createdBy: req.user._id,
+            eWayBill: eWayBill ? String(eWayBill).trim() : undefined,
+            senderInvoiceNo: senderInvoiceNo ? String(senderInvoiceNo).trim() : undefined,
+            additionalDocNos: normalizedAdditionalDocNos,
+            attachments: normalizedAttachments,
+            termsAccepted: termsAccepted === true,
+            termsVersion: termsVersion ? String(termsVersion).trim() : undefined,
+            termsAcceptedAt: termsAccepted === true ? new Date() : undefined,
+            bookingIdempotencyKey: normalizedIdempotencyKey,
+            routingInfo,
+            slaHours: slaConfig.slaHours,
+            slaDeadline: slaConfig.slaDeadline,
             chargeableWeight: pricing.chargeableWeight,
             baseFreight: pricing.baseFreight,
             fuelSurcharge: pricing.fuelSurcharge,
@@ -630,33 +976,82 @@ exports.createBooking = async (req, res) => {
             codCharge: pricing.codCharge || 0,
             taxAmount: pricing.gstAmount,
             totalAmount: pricing.totalAmount,
-
             history: [{
                 status: 'not_scheduled',
                 timestamp: new Date(),
+                branchId: originBranchId,
                 updatedBy: req.user._id,
-                remark: 'Booked via Customer Portal (Automatic Pricing Applied)'
+                remark: `Booking created via ${originType}`
             }]
         });
 
-        await shipment.save();
-        res.status(201).json({ 
-            message: 'Booking successful', 
-            awb: shipment.awb, 
-            shipment,
-            pricing: {
-                baseFreight: shipment.baseFreight,
-                fuelSurcharge: pricing.fuelSurcharge || 0,
-                odaSurcharge: pricing.odaSurcharge || 0,
-                insuranceAmount: pricing.fovCharge || 0,
-                codCharge: pricing.codCharge || 0,
-                taxAmount: shipment.taxAmount,
-                netAmount: shipment.totalAmount,
-                chargeableWeight: shipment.chargeableWeight
+        await shipment.save({ session: bookingSession });
+        await bookingSession.commitTransaction();
+
+        await logAudit(req, {
+            action: 'CREATE',
+            resource: 'shipment',
+            resourceId: shipment._id,
+            description: `New booking ${awb} created`,
+            details: { awbSeriesId: issuedAwb.seriesId, allocationId: issuedAwb.allocationId, originBranchId, destinationBranchId }
+        });
+
+        res.status(201).json(bookingResponse(shipment));
+    } catch (error) {
+        if (bookingSession && bookingSession.inTransaction()) {
+            await bookingSession.abortTransaction();
+        }
+        if (error?.code === 11000 && normalizedIdempotencyKey) {
+            const existingBooking = await Shipment.findOne({
+                createdBy: req.user._id,
+                bookingIdempotencyKey: normalizedIdempotencyKey
+            });
+            if (existingBooking) {
+                return res.status(200).json(bookingResponse(existingBooking, true));
             }
+        }
+        console.error('Error creating customer booking:', error);
+        res.status(error.statusCode || 500).json({ message: error.message || 'Server Error creating booking' });
+    } finally {
+        if (bookingSession) await bookingSession.endSession();
+    }
+};
+
+// @desc    Auto-Route a shipment (preview routing without creating)
+// @route   GET /api/shipments/auto-route
+// @access  Private
+exports.autoRouteShipment = async (req, res) => {
+    try {
+        const { originPincode, destinationPincode } = req.query;
+
+        if (!originPincode || !destinationPincode) {
+            return res.status(400).json({ message: 'originPincode and destinationPincode are required' });
+        }
+
+        const result = await autoRoute(originPincode, destinationPincode);
+
+        res.json({
+            originPincode,
+            destinationPincode,
+            serviceable: result.serviceable,
+            isLocal: result.isLocal,
+            isODA: result.isODA,
+            estimatedTransitDays: result.estimatedTransitDays,
+            originBranch: result.originBranch,
+            destinationBranch: result.destinationBranch,
+            route: result.route ? {
+                _id: result.route._id,
+                name: result.route.name,
+                sourceCity: result.route.sourceCity,
+                destinationCity: result.route.destinationCity,
+                totalDistanceKm: result.route.totalDistanceKm,
+                totalTransitTimeHours: result.route.totalTransitTimeHours
+            } : null,
+            errors: result.errors,
+            warnings: result.warnings
         });
     } catch (error) {
-        console.error('Error creating customer booking:', error);
-        res.status(500).json({ message: error.message || 'Server Error creating booking' });
+        console.error('Error auto-routing shipment:', error);
+        res.status(500).json({ message: 'Server Error during auto-routing' });
     }
 };

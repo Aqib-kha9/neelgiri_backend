@@ -2,32 +2,61 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const Branch = require('../models/Branch');
 const User = require('../models/User');
+const Partner = require('../models/Partner');
 const Role = require('../models/Role');
+const Customer = require('../models/Customer');
+const Pincode = require('../models/Pincode');
+const Location = require('../models/Location');
+const Shipment = require('../models/Shipment');
+const Bag = require('../models/Bag');
+const Manifest = require('../models/Manifest');
+const Trip = require('../models/Trip');
+const Route = require('../models/Route');
+const Vehicle = require('../models/Vehicle');
+const Driver = require('../models/Driver');
+const { findValidBranchPincode } = require('../utils/pincodeValidation');
 
 // @desc    Create a new branch
 // @route   POST /api/branches
 // @access  Private (Partner Admin, Super Admin)
 const createBranch = asyncHandler(async (req, res) => {
-    const { name, code, address, city, state, pincode, phone, contact, partnerId } = req.body;
+    const {
+        name, code, address, city, state, pincode, phone, contact,
+        partnerId, type, ownershipType, operationalType
+    } = req.body;
 
     const roleName = req.user.role.name;
+    const requestedOwnership = ownershipType || (type === 'partner' ? 'partner' : 'company');
+    if (!['company', 'partner'].includes(requestedOwnership)) {
+        return res.status(400).json({ message: 'Invalid branch ownership type' });
+    }
 
-    // 1. Determine Partner ID
-    let targetPartnerId;
+    // `type` historically came from the ownership radio buttons in the UI.
+    // Keep operational type separate so hub conversion remains compatible.
+    const operationalTypes = ['branch', 'hub', 'central_sorting_facility', 'regional_hub', 'metro_hub'];
+    const targetType = operationalTypes.includes(operationalType) ? operationalType : 'branch';
+    let targetPartnerId = null;
 
     if (roleName === 'super_admin') {
-        // Super Admin must specify partnerId
-        if (!partnerId) {
-            res.status(400);
-            throw new Error('Super Admin must specify a partnerId for the branch');
+        if (requestedOwnership === 'partner') {
+            if (!partnerId || !mongoose.Types.ObjectId.isValid(partnerId)) {
+                return res.status(400).json({ message: 'A valid partner must be selected for a partner-owned branch' });
+            }
+
+            const partnerUser = await User.findById(partnerId).populate('role', 'name');
+            const partnerProfile = partnerUser
+                ? await Partner.findOne({ userId: partnerUser._id, isDeleted: { $ne: true } }).select('_id status')
+                : null;
+            if (!partnerUser || !['partner_admin', 'partner'].includes(partnerUser.role?.name) || partnerUser.status === 'inactive' || partnerUser.isInactive || !partnerProfile || partnerProfile.status !== 'ACTIVE') {
+                return res.status(400).json({ message: 'Selected partner is not an active partner account' });
+            }
+            targetPartnerId = partnerUser._id;
         }
-        targetPartnerId = partnerId;
     } else if (roleName === 'partner_admin' || roleName === 'partner') {
-        // Partner Admin forces their own ID
+        // Partner users cannot forge ownership or create company-owned branches.
         targetPartnerId = req.user._id;
     } else {
-        res.status(403);
-        throw new Error('Not authorized to create branches');
+        return res.status(403).json({ message: 'Not authorized to create branches' });
     }
 
     // 2. Check for duplicate code
@@ -35,6 +64,14 @@ const createBranch = asyncHandler(async (req, res) => {
     if (branchExists) {
         res.status(400);
         throw new Error('Branch code already exists');
+    }
+
+    try {
+        await findValidBranchPincode({ pincode, state, city });
+    } catch (error) {
+        return res.status(error.statusCode || 400).json({
+            message: error.message || 'Pincode could not be verified'
+        });
     }
 
     // 3. Construct objects
@@ -54,6 +91,8 @@ const createBranch = asyncHandler(async (req, res) => {
     const branch = await Branch.create({
         name,
         code,
+        type: targetType,
+        ownershipType: roleName === 'super_admin' ? requestedOwnership : 'partner',
         partnerId: targetPartnerId,
         address: addressObj,
         contact: contactObj
@@ -167,11 +206,65 @@ const getBranches = asyncHandler(async (req, res) => {
 
         return {
             ...branch,
+            ownershipType: branch.ownershipType || (branch.partnerId ? 'partner' : 'company'),
             admin: admin ? { name: admin.name, email: admin.email } : null
         };
     });
 
     res.json(branchesWithAdmins);
+});
+
+// @desc    Permanently delete a branch when it has no dependent records
+// @route   DELETE /api/branches/:id
+// @access  Private (Partner Admin (Own), Super Admin)
+const deleteBranch = asyncHandler(async (req, res) => {
+    const branch = await Branch.findById(req.params.id);
+
+    if (!branch) {
+        res.status(404);
+        throw new Error('Branch not found');
+    }
+
+    const roleName = req.user.role.name;
+    if (roleName !== 'super_admin' && (!branch.partnerId || branch.partnerId.toString() !== req.user._id.toString())) {
+        res.status(403);
+        throw new Error('Not authorized to delete this branch');
+    }
+
+    const branchId = branch._id;
+    const branchRefs = [branchId, branchId.toString(), branch.code].filter(Boolean);
+    const checks = await Promise.all([
+        User.collection.countDocuments({
+            $or: [
+                { branchId: { $in: branchRefs } },
+                { 'associations.branchId': { $in: branchRefs } }
+            ]
+        }),
+        Customer.countDocuments({ branchId }),
+        Pincode.countDocuments({ branchId }),
+        Location.countDocuments({ branchId }),
+        Shipment.countDocuments({ $or: [{ branchId }, { originBranchId: branchId }, { currentBranch: branchId }, { destinationBranch: branchId }] }),
+        Bag.countDocuments({ $or: [{ branchId }, { sourceBranch: branchId }, { destinationBranch: branchId }, { currentBranch: branchId }] }),
+        Manifest.countDocuments({ $or: [{ branchId }, { sourceBranch: branchId }, { destinationBranch: branchId }] }),
+        Trip.countDocuments({ $or: [{ branchId }, { originBranch: branchId }, { destinationBranch: branchId }] }),
+        Route.countDocuments({ branchId }),
+        Vehicle.countDocuments({ branchId }),
+        Driver.countDocuments({ $or: [{ branchId }, { hubId: branchId.toString() }, { hubId: branch.code }] }),
+        Branch.countDocuments({ $or: [{ servesBranches: branchId }, { connectedHubs: branchId }] })
+    ]);
+
+    const labels = ['users', 'customers', 'pincodes', 'locations', 'shipments', 'bags', 'manifests', 'trips', 'routes', 'vehicles', 'drivers', 'branch links'];
+    const dependencies = Object.fromEntries(checks.flatMap((count, index) => count ? [[labels[index], count]] : []));
+    if (Object.keys(dependencies).length) {
+        res.status(409);
+        return res.json({
+            message: 'Branch cannot be permanently deleted because dependent records exist. Deactivate it instead or remove dependencies first.',
+            dependencies
+        });
+    }
+
+    await Branch.deleteOne({ _id: branchId });
+    res.json({ message: 'Branch permanently deleted', branchId });
 });
 
 // @desc    Update branch
@@ -187,7 +280,7 @@ const updateBranch = asyncHandler(async (req, res) => {
 
     // Authorization
     if (req.user.role.name !== 'super_admin') {
-        if (branch.partnerId.toString() !== req.user._id.toString()) {
+        if (!branch.partnerId || branch.partnerId.toString() !== req.user._id.toString()) {
             res.status(403);
             throw new Error('Not authorized to update this branch');
         }
@@ -231,7 +324,7 @@ const getBranchHierarchy = asyncHandler(async (req, res) => {
             }
         } else {
             // Riders/Customers - deny
-            if (branch.partnerId.toString() !== req.user._id.toString()) { // Fallback check
+            if (!branch.partnerId || branch.partnerId.toString() !== req.user._id.toString()) { // Fallback check
                 res.status(403);
                 throw new Error('Not authorized to view this branch hierarchy');
             }
@@ -374,5 +467,6 @@ module.exports = {
     createBranch,
     getBranches,
     updateBranch,
+    deleteBranch,
     getBranchHierarchy
 };

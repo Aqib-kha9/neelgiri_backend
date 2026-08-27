@@ -33,8 +33,10 @@ const calculateFreight = async ({
     width = 0, // Alias for breadth
     height = 0, // in cm
     declaredValue = 0,
+    codAmount = 0,
     isCOD = false,
     insuranceRequested = false,
+    fovPercentage: requestedFovPercentage = null,
     customerId = null,
     customerType = 'CUSTOMER', // Used for auto-finding rate
     serviceType = 'SURFACE'    // Used for auto-finding rate
@@ -166,9 +168,11 @@ const calculateFreight = async ({
         let fovCharge = 0;
         if (insuranceRequested) {
             let fovPercentage = rateCard.fovCharge?.percentage || 0;
-            
-            // Override with customer-specific FOV percentage if available
-            if (customerId) {
+
+            // Caller-provided FOV is authoritative after controller validation.
+            if (requestedFovPercentage !== null && requestedFovPercentage !== undefined) {
+                fovPercentage = Number(requestedFovPercentage);
+            } else if (customerId) {
                 const customer = await Customer.findById(customerId);
                 if (customer && customer.fovPercentage > 0) {
                     fovPercentage = customer.fovPercentage;
@@ -186,7 +190,7 @@ const calculateFreight = async ({
 
         // COD Charges
         const codCharge = isCOD ? Math.max(
-            (declaredValue * (rateCard.codCharges?.percentage || 0)) / 100,
+            (Number(codAmount) * (rateCard.codCharges?.percentage || 0)) / 100,
             rateCard.codCharges?.minAmount || 0,
             rateCard.codCharges?.fixedCharge || 0
         ) : 0;
@@ -208,6 +212,7 @@ const calculateFreight = async ({
         const totalAmount = subTotal + gstAmount;
 
         return {
+            volumetricWeight,
             chargeableWeight,
             distance,
             appliedBucket: appliedBucket ? appliedBucket.name : (distance >= 0 ? 'CALCULATED' : 'SLAB_FALLBACK'),

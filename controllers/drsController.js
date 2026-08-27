@@ -2,6 +2,11 @@ const DRS = require('../models/DRS');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
 const Shipment = require('../models/Shipment');
+const Exception = require('../models/Exception');
+const { logAudit } = require('../utils/auditLogger');
+const { generateExceptionId } = require('../utils/idGenerator');
+const { notifyDelivered, notifyDeliveryFailed, notifyRTOInitiated, notifyOutForDelivery } = require('../utils/notificationHelper');
+const { validateStatusTransition, getValidNextStatuses } = require('../utils/validationGuards');
 
 // Helper to generate DRS ID
 const generateDRSId = async () => {
@@ -439,7 +444,7 @@ exports.updateDRSStatus = async (req, res) => {
 // @access  Private (Rider)
 exports.updateShipmentStatus = async (req, res) => {
     try {
-        const { awb, status } = req.body;
+        const { awb, status, failureReason, remark, nextAttemptDate } = req.body;
 
         if (!awb || !status) {
             return res.status(400).json({ message: 'AWB and status are required' });
@@ -459,23 +464,269 @@ exports.updateShipmentStatus = async (req, res) => {
             return res.status(404).json({ message: 'Shipment not found in this DRS' });
         }
 
-        // Update internal DRS shipment status
-        // CHANGE: Rider's 'delivered' becomes 'pending_for_branch_approval' in DRS document to match Shipment collection
-        const internalStatus = status === 'delivered' ? 'pending_for_branch_approval' : status;
-        targetDRS.shipments[shipmentIndex].status = internalStatus;
+        // Fetch the shipment to check/update delivery attempts
+        const shipment = await Shipment.findOne({ awb });
+        if (!shipment) {
+            return res.status(404).json({ message: 'Shipment not found in database' });
+        }
 
-        // Update stats and deliveredAt
+        // =====================================================
+        // PHASE 4.3: Status Transition Validation Guard
+        // =====================================================
+        // Map rider-facing status to internal status for validation
+        const statusMap = {
+            'delivered': 'delivered',
+            'failed': 'delivery_failed',
+            'undelivered': 'delivery_failed',
+            'out_for_delivery': 'out_for_delivery',
+            'rto_initiated': 'rto_initiated',
+            'cancelled': 'cancelled'
+        };
+        const targetInternalStatus = statusMap[status] || status;
+        const transitionCheck = validateStatusTransition(shipment.status, targetInternalStatus);
+        if (!transitionCheck.valid) {
+            return res.status(409).json({
+                message: 'Invalid status transition',
+                currentStatus: shipment.status,
+                attemptedStatus: targetInternalStatus,
+                validNextStatuses: getValidNextStatuses(shipment.status),
+                reason: transitionCheck.reason
+            });
+        }
+
+        // =====================================================
+        // PHASE 3.1: Delivery Attempt Tracking & Re-attempt Logic
+        // =====================================================
+        let rtoAutoInitiated = false;
+        let attemptOutcome = null;
+        let mappedStatus = null;
+
         if (status === 'delivered') {
+            // Successful delivery
+            attemptOutcome = 'delivered';
+            mappedStatus = 'pending_for_branch_approval';
+
+            // Record successful delivery attempt
+            const attemptNumber = (shipment.deliveryAttempts || 0) + 1;
+            await Shipment.updateOne(
+                { awb },
+                {
+                    $set: {
+                        status: mappedStatus,
+                        deliveredAt: new Date()
+                    },
+                    $push: {
+                        deliveryAttemptHistory: {
+                            attemptNumber,
+                            date: new Date(),
+                            drsId: targetDRS._id,
+                            riderId: targetDRS.rider,
+                            riderName: req.user.name || 'Rider',
+                            outcome: 'delivered',
+                            remark: remark || 'Delivery successful',
+                            nextAttemptDate: null
+                        },
+                        history: {
+                            status: mappedStatus,
+                            branchId: targetDRS.branchId || 'HEAD_OFFICE',
+                            updatedBy: req.user._id,
+                            remark: `Delivery successful - Attempt #${attemptNumber} (DRS: ${targetDRS.drsId})`
+                        },
+                        journey: {
+                            leg: (shipment.journey?.length || 0) + 1,
+                            type: 'last_mile',
+                            fromBranch: targetDRS.branchId,
+                            toBranch: targetDRS.branchId,
+                            drsId: targetDRS._id,
+                            timestamp: new Date(),
+                            remark: `Delivery attempt #${attemptNumber} - SUCCESS (DRS: ${targetDRS.drsId})`
+                        }
+                    }
+                }
+            );
+        } else if (['failed', 'undelivered'].includes(status)) {
+            // Failed delivery attempt
+            attemptOutcome = 'failed';
+            const attemptNumber = (shipment.deliveryAttempts || 0) + 1;
+            const maxAttempts = shipment.maxDeliveryAttempts || 3;
+
+            // Determine outcome category
+            let outcomeCategory = 'failed';
+            if (failureReason) {
+                const reason = failureReason.toLowerCase();
+                if (reason.includes('customer') && reason.includes('unavailable')) outcomeCategory = 'customer_unavailable';
+                else if (reason.includes('wrong') && reason.includes('address')) outcomeCategory = 'wrong_address';
+                else if (reason.includes('refus')) outcomeCategory = 'refused';
+                else if (reason.includes('reschedul')) outcomeCategory = 'rescheduled';
+            }
+
+            // Check if max attempts reached → auto-initiate RTO
+            if (attemptNumber >= maxAttempts) {
+                // AUTO-INITIATE RTO
+                rtoAutoInitiated = true;
+                mappedStatus = 'rto_initiated';
+
+                await Shipment.updateOne(
+                    { awb },
+                    {
+                        $set: {
+                            status: 'rto_initiated',
+                            rtoStatus: 'initiated',
+                            rtoReason: `Max delivery attempts (${maxAttempts}) exhausted. Last failure: ${failureReason || 'N/A'}`,
+                            rtoInitiatedAt: new Date(),
+                            rtoInitiatedBy: req.user._id
+                        },
+                        $inc: { deliveryAttempts: 1 },
+                        $push: {
+                            deliveryAttemptHistory: {
+                                attemptNumber,
+                                date: new Date(),
+                                drsId: targetDRS._id,
+                                riderId: targetDRS.rider,
+                                riderName: req.user.name || 'Rider',
+                                outcome: outcomeCategory,
+                                failureReason: failureReason || 'Delivery failed',
+                                remark: remark || `Attempt #${attemptNumber} failed - RTO auto-initiated`,
+                                nextAttemptDate: null
+                            },
+                            history: {
+                                status: 'rto_initiated',
+                                branchId: targetDRS.branchId || 'HEAD_OFFICE',
+                                updatedBy: req.user._id,
+                                remark: `RTO auto-initiated after ${attemptNumber}/${maxAttempts} failed attempts (DRS: ${targetDRS.drsId})`
+                            },
+                            journey: {
+                                leg: (shipment.journey?.length || 0) + 1,
+                                type: 'rto',
+                                fromBranch: targetDRS.branchId,
+                                toBranch: shipment.originBranchId,
+                                drsId: targetDRS._id,
+                                timestamp: new Date(),
+                                remark: `RTO initiated - ${attemptNumber}/${maxAttempts} attempts exhausted (DRS: ${targetDRS.drsId})`
+                            }
+                        }
+                    }
+                );
+
+                // Auto-create Exception for RTO
+                try {
+                    const exceptionId = await generateExceptionId();
+                    await Exception.create({
+                        exceptionId,
+                        awb,
+                        shipmentId: shipment._id,
+                        type: 'RTO_AUTO',
+                        title: `RTO Auto-Initiated - ${maxAttempts} attempts exhausted`,
+                        description: `RTO auto-initiated: ${maxAttempts} delivery attempts exhausted. Last failure reason: ${failureReason || 'N/A'}. Shipment will be returned to origin branch.`,
+                        severity: 'HIGH',
+                        status: 'OPEN',
+                        branchId: targetDRS.branchId,
+                        partnerId: shipment.partnerId,
+                        createdBy: req.user._id
+                    });
+                } catch (excErr) {
+                    console.error('Failed to create RTO exception:', excErr.message);
+                }
+
+                // Update DRS shipment status to 'failed' (finalized)
+                targetDRS.shipments[shipmentIndex].status = 'failed';
+                targetDRS.shipments[shipmentIndex].deliveredAt = undefined;
+            } else {
+                // Still have attempts remaining → mark as delivery_failed, available for re-attempt
+                mappedStatus = 'delivery_failed';
+
+                // Calculate next attempt date (default: next business day)
+                const nextDate = nextAttemptDate ? new Date(nextAttemptDate) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+                await Shipment.updateOne(
+                    { awb },
+                    {
+                        $set: {
+                            status: 'delivery_failed',
+                            deliveredAt: undefined
+                        },
+                        $inc: { deliveryAttempts: 1 },
+                        $push: {
+                            deliveryAttemptHistory: {
+                                attemptNumber,
+                                date: new Date(),
+                                drsId: targetDRS._id,
+                                riderId: targetDRS.rider,
+                                riderName: req.user.name || 'Rider',
+                                outcome: outcomeCategory,
+                                failureReason: failureReason || 'Delivery failed',
+                                remark: remark || `Attempt #${attemptNumber} failed - ${maxAttempts - attemptNumber} attempts remaining`,
+                                nextAttemptDate: nextDate
+                            },
+                            history: {
+                                status: 'delivery_failed',
+                                branchId: targetDRS.branchId || 'HEAD_OFFICE',
+                                updatedBy: req.user._id,
+                                remark: `Delivery attempt #${attemptNumber}/${maxAttempts} failed (DRS: ${targetDRS.drsId}). Next attempt: ${nextDate.toDateString()}`
+                            },
+                            journey: {
+                                leg: (shipment.journey?.length || 0) + 1,
+                                type: 'last_mile',
+                                fromBranch: targetDRS.branchId,
+                                toBranch: targetDRS.branchId,
+                                drsId: targetDRS._id,
+                                timestamp: new Date(),
+                                remark: `Delivery attempt #${attemptNumber} - FAILED: ${failureReason || 'N/A'} (DRS: ${targetDRS.drsId})`
+                            }
+                        }
+                    }
+                );
+
+                // Update DRS shipment status to 'failed' (will be available for re-attempt)
+                targetDRS.shipments[shipmentIndex].status = 'failed';
+                targetDRS.shipments[shipmentIndex].deliveredAt = undefined;
+            }
+        } else {
+            // Other statuses (pending, in_transit, etc.)
+            const shipmentStatusMap = {
+                'undelivered': 'paused',
+                'failed': 'paused',
+                'pending': 'scheduled',
+                'in_transit': 'in_progress'
+            };
+            mappedStatus = shipmentStatusMap[status] || 'in_progress';
+
+            // Update internal DRS shipment status
+            const internalStatus = status === 'delivered' ? 'pending_for_branch_approval' : status;
+            targetDRS.shipments[shipmentIndex].status = internalStatus;
+
+            if (['pending', 'in_transit'].includes(status)) {
+                targetDRS.shipments[shipmentIndex].deliveredAt = undefined;
+            }
+
+            await Shipment.updateOne(
+                { awb },
+                {
+                    $set: {
+                        status: mappedStatus,
+                        deliveredAt: status === 'delivered' ? new Date() : undefined,
+                    },
+                    $push: {
+                        history: {
+                            status: mappedStatus,
+                            branchId: targetDRS.branchId || 'HEAD_OFFICE',
+                            updatedBy: req.user._id,
+                            remark: `Status updated via Rider Task (DRS: ${targetDRS.drsId})`
+                        }
+                    }
+                }
+            );
+        }
+
+        // For 'delivered' status, update DRS internal status
+        if (status === 'delivered') {
+            targetDRS.shipments[shipmentIndex].status = 'pending_for_branch_approval';
             targetDRS.shipments[shipmentIndex].deliveredAt = new Date();
-        } else if (['pending', 'in_transit'].includes(status)) {
-            targetDRS.shipments[shipmentIndex].deliveredAt = undefined;
         }
 
         // Recalculate ALL stats for accuracy
         const total = targetDRS.shipments.length;
-        // CHANGE: Only shipments marked 'completed' (by branch) are considered completed for DRS stats
         const completedCount = targetDRS.shipments.filter(s => s.status === 'completed').length;
-        // CHANGE: Shipments in 'pending_for_branch_approval' are waiting for branch
         const pendingApprovalCount = targetDRS.shipments.filter(s => s.status === 'pending_for_branch_approval').length;
         const pending = targetDRS.shipments.filter(s => ['pending', 'in_transit'].includes(s.status)).length;
 
@@ -484,8 +735,6 @@ exports.updateShipmentStatus = async (req, res) => {
         targetDRS.stats.pendingShipments = pending;
 
         // Auto-Complete DRS Check
-        // CHANGE: A DRS is only "completed" if EVERYTHING is truly 'completed' (approved) or failed
-        // It should NOT autocomplete if there are 'pending_for_branch_approval' items
         const isAllFinalized = !targetDRS.shipments.some(s => ['pending', 'in_transit', 'pending_for_branch_approval'].includes(s.status));
 
         if (isAllFinalized && ['scheduled', 'in_progress', 'paused'].includes(targetDRS.status)) {
@@ -500,41 +749,178 @@ exports.updateShipmentStatus = async (req, res) => {
         targetDRS.markModified('shipments');
         await targetDRS.save();
 
-        // SYNC WITH SHIPMENT MODEL
-        const shipmentStatusMap = {
-            'delivered': 'pending_for_branch_approval', // Change: Rider delivery requires approval
-            'undelivered': 'paused',
-            'failed': 'paused',
-            'pending': 'scheduled',
-            'in_transit': 'in_progress'
-        };
+        // Audit log
+        logAudit({
+            action: 'SHIPMENT_STATUS_UPDATE',
+            entity: 'Shipment',
+            entityId: shipment._id,
+            awb,
+            userId: req.user._id,
+            userRole: req.user.role?.name,
+            branchId: targetDRS.branchId,
+            details: { status, mappedStatus, failureReason, rtoAutoInitiated, drsId: targetDRS.drsId }
+        });
 
-        const mappedStatus = shipmentStatusMap[status] || 'in_progress';
+        // Fire-and-forget: notify customer based on delivery outcome
+        if (attemptOutcome === 'delivered') {
+            notifyDelivered(shipment, { deliveredTo: req.body.deliveredTo || 'customer' }, req.user);
+        } else if (attemptOutcome === 'failed') {
+            if (rtoAutoInitiated) {
+                notifyRTOInitiated(shipment, `Max delivery attempts exhausted. Last failure: ${failureReason || 'N/A'}`, req.user);
+            } else {
+                const nextDate = nextAttemptDate ? new Date(nextAttemptDate) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+                notifyDeliveryFailed(shipment, { reason: failureReason || 'Delivery failed', nextAttempt: nextDate.toDateString() }, req.user);
+            }
+        }
 
+        res.json({
+            ...targetDRS.toObject(),
+            _deliveryAttemptInfo: {
+                outcome: attemptOutcome,
+                rtoAutoInitiated,
+                deliveryAttempts: (shipment.deliveryAttempts || 0) + (['failed', 'undelivered', 'delivered'].includes(status) ? 1 : 0),
+                maxDeliveryAttempts: shipment.maxDeliveryAttempts || 3,
+                attemptsRemaining: Math.max(0, (shipment.maxDeliveryAttempts || 3) - ((shipment.deliveryAttempts || 0) + (['failed', 'undelivered'].includes(status) ? 1 : 0)))
+            }
+        });
+
+    } catch (error) {
+        console.error('Error updating Shipment status:', error);
+        res.status(500).json({ message: 'Server Error updating Shipment Status', error: error.message });
+    }
+};
+
+// @desc    Reschedule delivery for a failed shipment (re-attempt)
+// @route   POST /api/drs/:id/reschedule
+// @access  Branch Admin, Dispatcher
+exports.rescheduleDelivery = async (req, res) => {
+    try {
+        const { awb, newDrsId, scheduledDate } = req.body;
+
+        if (!awb) {
+            return res.status(400).json({ message: 'AWB is required' });
+        }
+
+        const shipment = await Shipment.findOne({ awb });
+        if (!shipment) {
+            return res.status(404).json({ message: 'Shipment not found' });
+        }
+
+        // Verify shipment is in a re-attemptable state
+        if (!['delivery_failed', 'paused'].includes(shipment.status)) {
+            return res.status(400).json({
+                message: `Shipment cannot be rescheduled. Current status: ${shipment.status}. Only failed/paused shipments can be rescheduled.`
+            });
+        }
+
+        // Check attempt limit
+        const currentAttempts = shipment.deliveryAttempts || 0;
+        const maxAttempts = shipment.maxDeliveryAttempts || 3;
+
+        if (currentAttempts >= maxAttempts) {
+            return res.status(400).json({
+                message: `Cannot reschedule. Maximum delivery attempts (${maxAttempts}) exhausted. Please initiate RTO.`,
+                deliveryAttempts: currentAttempts,
+                maxDeliveryAttempts: maxAttempts
+            });
+        }
+
+        // If newDrsId provided, move shipment to new DRS
+        if (newDrsId) {
+            let newDRS;
+            if (newDrsId.match(/^[0-9a-fA-F]{24}$/)) {
+                newDRS = await DRS.findById(newDrsId);
+            } else {
+                newDRS = await DRS.findOne({ drsId: newDrsId });
+            }
+
+            if (!newDRS) {
+                return res.status(404).json({ message: 'New DRS not found' });
+            }
+
+            // Check if shipment already in new DRS
+            const alreadyInDRS = newDRS.shipments.find(s => s.awb === awb);
+            if (!alreadyInDRS) {
+                newDRS.shipments.push({ awb, status: 'pending' });
+                newDRS.stats.totalShipments = newDRS.shipments.length;
+                newDRS.stats.pendingShipments = newDRS.shipments.filter(s => ['pending', 'in_transit'].includes(s.status)).length;
+                newDRS.markModified('shipments');
+                await newDRS.save();
+            }
+        }
+
+        // Update shipment status back to scheduled
         await Shipment.updateOne(
             { awb },
             {
                 $set: {
-                    status: mappedStatus,
-                    deliveredAt: status === 'delivered' ? new Date() : undefined,
-                    // Note: completedVia is NOT set here. It is set upon Branch Approval.
+                    status: 'scheduled',
+                    deliveredAt: undefined
                 },
                 $push: {
                     history: {
-                        status: mappedStatus,
-                        branchId: targetDRS.branchId || 'HEAD_OFFICE',
+                        status: 'scheduled',
+                        branchId: req.user.branchId || 'HEAD_OFFICE',
                         updatedBy: req.user._id,
-                        remark: `Status updated via Rider Task (DRS: ${targetDRS.drsId})`
+                        remark: `Delivery rescheduled - Attempt #${currentAttempts + 1}/${maxAttempts}${newDrsId ? ` (New DRS: ${newDrsId})` : ''}`
                     }
                 }
             }
         );
 
-        res.json(targetDRS);
+        logAudit({
+            action: 'DELIVERY_RESCHEDULE',
+            entity: 'Shipment',
+            entityId: shipment._id,
+            awb,
+            userId: req.user._id,
+            userRole: req.user.role?.name,
+            branchId: req.user.branchId,
+            details: { attemptNumber: currentAttempts + 1, newDrsId, scheduledDate }
+        });
+
+        res.json({
+            message: 'Delivery rescheduled successfully',
+            awb,
+            nextAttemptNumber: currentAttempts + 1,
+            attemptsRemaining: maxAttempts - currentAttempts - 1
+        });
 
     } catch (error) {
-        console.error('Error updating Shipment status:', error);
-        res.status(500).json({ message: 'Server Error updating Shipment Status' });
+        console.error('Error rescheduling delivery:', error);
+        res.status(500).json({ message: 'Server Error rescheduling delivery', error: error.message });
+    }
+};
+
+// @desc    Get delivery attempt history for a shipment
+// @route   GET /api/drs/attempts/:awb
+// @access  Private
+exports.getDeliveryAttempts = async (req, res) => {
+    try {
+        const { awb } = req.params;
+
+        const shipment = await Shipment.findOne({ awb })
+            .select('awb deliveryAttempts maxDeliveryAttempts deliveryAttemptHistory status rtoStatus')
+            .populate('deliveryAttemptHistory.drsId', 'drsId')
+            .populate('deliveryAttemptHistory.riderId', 'name');
+
+        if (!shipment) {
+            return res.status(404).json({ message: 'Shipment not found' });
+        }
+
+        res.json({
+            awb: shipment.awb,
+            currentStatus: shipment.status,
+            rtoStatus: shipment.rtoStatus,
+            deliveryAttempts: shipment.deliveryAttempts,
+            maxDeliveryAttempts: shipment.maxDeliveryAttempts,
+            attemptsRemaining: Math.max(0, shipment.maxDeliveryAttempts - shipment.deliveryAttempts),
+            attemptHistory: shipment.deliveryAttemptHistory
+        });
+
+    } catch (error) {
+        console.error('Error fetching delivery attempts:', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
     }
 };
 
@@ -889,5 +1275,7 @@ module.exports = {
     pauseDRS: exports.pauseDRS,
     resumeDRS: exports.resumeDRS,
     approveDelivery,
-    approveAllDeliveries
+    approveAllDeliveries,
+    rescheduleDelivery: exports.rescheduleDelivery,
+    getDeliveryAttempts: exports.getDeliveryAttempts
 };

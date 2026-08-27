@@ -1,44 +1,61 @@
+const { City, State } = require('country-state-city');
+
+const INDIA_COUNTRY_CODE = 'IN';
+
+exports.getIndianStates = (req, res) => {
+    const states = State.getStatesOfCountry(INDIA_COUNTRY_CODE)
+        .map(({ name, isoCode }) => ({ name, isoCode }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({ states });
+};
+
+exports.getIndianCities = (req, res) => {
+    const stateCode = String(req.query.stateCode || '').trim().toUpperCase();
+    const state = State.getStateByCodeAndCountry(stateCode, INDIA_COUNTRY_CODE);
+
+    if (!state) {
+        return res.status(400).json({ message: 'A valid Indian state code is required' });
+    }
+
+    const cities = City.getCitiesOfState(INDIA_COUNTRY_CODE, stateCode)
+        .map(({ name }) => name)
+        .filter((name, index, allCities) => allCities.indexOf(name) === index)
+        .sort((a, b) => a.localeCompare(b));
+
+    return res.json({ state: { name: state.name, isoCode: state.isoCode }, cities });
+};
+
 exports.searchPlaces = async (req, res) => {
     try {
-        console.log("\n--- [Backend Places API] Search Request Started ---");
-        const { input } = req.query;
-        console.log(`[Backend Places API] Input received: "${input}"`);
-        
+        const input = String(req.query.input || '').trim();
+
         if (!input) {
-            console.log("[Backend Places API] Error: Input is required");
             return res.status(400).json({ message: "Input is required" });
         }
 
         const apiKey = process.env.GOOGLE_PLACES_API_KEY;
         if (!apiKey) {
-            console.error("[Backend Places API] Error: Google Places API Key not configured in .env");
+            console.error("Google Places API key is not configured");
             return res.status(500).json({ message: "Google Places API Key not configured" });
         }
-        console.log(`[Backend Places API] API Key found (starts with: ${apiKey.substring(0, 5)}..., length: ${apiKey.length})`);
 
         const url = new URL('https://maps.googleapis.com/maps/api/place/autocomplete/json');
         url.searchParams.append('input', input);
         url.searchParams.append('key', apiKey);
         url.searchParams.append('components', 'country:in');
 
-        console.log(`[Backend Places API] Calling Google Maps API...`);
         const response = await fetch(url.toString());
         const data = await response.json();
 
-        console.log(`[Backend Places API] Google API Response Status Code: ${response.status}`);
-        if (data.status) {
-            console.log(`[Backend Places API] Google API Internal Status: ${data.status}`);
-            if (data.error_message) {
-                console.error(`[Backend Places API] Google API Error Message: ${data.error_message}`);
-            }
+        if (!response.ok) {
+            console.error(`Google Places autocomplete request failed with status ${response.status}`);
         }
-        
-        console.log(`[Backend Places API] Sending ${data.predictions ? data.predictions.length : 0} predictions back to frontend`);
-        console.log("---------------------------------------------------\n");
-        res.json(data);
+
+        return res.json(data);
     } catch (error) {
-        console.error("[Backend Places API] Error searching places:", error);
-        res.status(500).json({ message: "Failed to fetch places" });
+        console.error("Google Places autocomplete request failed:", error.message);
+        return res.status(500).json({ message: "Failed to fetch places" });
     }
 };
 
@@ -60,9 +77,13 @@ exports.getPlaceDetails = async (req, res) => {
         const response = await fetch(url.toString());
         const data = await response.json();
 
-        res.json(data);
+        if (!response.ok) {
+            console.error(`Google Places details request failed with status ${response.status}`);
+        }
+
+        return res.json(data);
     } catch (error) {
-        console.error("Error fetching place details:", error);
-        res.status(500).json({ message: "Failed to fetch place details" });
+        console.error("Google Places details request failed:", error.message);
+        return res.status(500).json({ message: "Failed to fetch place details" });
     }
 };

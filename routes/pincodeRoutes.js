@@ -5,6 +5,8 @@ const {
     getDistinctLocations,
     globalSearchPincode,
     bulkUpdateServiceability,
+    bulkMapLocation,
+    validateBranchPincode,
     checkPincode,
     createPincode,
     claimPincode,
@@ -17,9 +19,11 @@ const {
 const { protect } = require('../middleware/authMiddleware');
 
 // Special routes FIRST (before /:id to avoid conflicts)
+router.get('/validate-branch/:pincode', protect, validateBranchPincode);
 router.get('/locations/distinct', protect, getDistinctLocations);
 router.get('/global-search', protect, globalSearchPincode);
 router.post('/bulk-update', protect, bulkUpdateServiceability);
+router.post('/bulk-map-location', protect, bulkMapLocation);
 router.post('/bulk-claim', protect, bulkClaimPincodes);
 router.post('/bulk', protect, bulkCreatePincodes);
 

@@ -2,41 +2,42 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
 const protect = async (req, res, next) => {
-    let token;
-
-    if (
-        req.headers.authorization &&
-        req.headers.authorization.startsWith('Bearer')
-    ) {
-        try {
-            token = req.headers.authorization.split(' ')[1];
-
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
-            console.log(`🔐 [Auth] Token valid for User ID: ${decoded.id}`);
-
-            req.user = await User.findById(decoded.id).select('-password').populate({
-                path: 'role',
-                populate: { path: 'permissions' }
-            });
-
-            console.log(`👤 [Auth] User: ${req.user?.name}, Role: ${req.user?.role?.name}, Branch: ${req.user?.branchId}`);
-
-            if (req.user && req.user.isPaused) {
-                return res.status(403).json({
-                    message: 'Your account has been paused by administrator',
-                    isPaused: true
-                });
-            }
-
-            next();
-        } catch (error) {
-            console.error(error);
-            res.status(401).json({ message: 'Not authorized, token failed' });
-        }
+    const authorization = req.headers.authorization || '';
+    if (!authorization.startsWith('Bearer ')) {
+        return res.status(401).json({ message: 'Not authorized, no token' });
     }
 
+    const token = authorization.slice(7).trim();
     if (!token) {
-        res.status(401).json({ message: 'Not authorized, no token' });
+        return res.status(401).json({ message: 'Not authorized, no token' });
+    }
+
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await User.findById(decoded.id).select('-password').populate({
+            path: 'role',
+            populate: { path: 'permissions' }
+        });
+
+        if (!user) {
+            return res.status(401).json({ message: 'Not authorized, user no longer exists' });
+        }
+
+        if (user.isInactive || user.status === 'inactive') {
+            return res.status(403).json({ message: 'Your account is inactive' });
+        }
+
+        if (user.isPaused) {
+            return res.status(403).json({
+                message: 'Your account has been paused by administrator',
+                isPaused: true
+            });
+        }
+
+        req.user = user;
+        return next();
+    } catch (error) {
+        return res.status(401).json({ message: 'Not authorized, token failed' });
     }
 };
 

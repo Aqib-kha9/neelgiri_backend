@@ -5,6 +5,7 @@ const connectDB = require('./config/db');
 
 // Models
 const User = require('./models/User');
+const Customer = require('./models/Customer');
 const Role = require('./models/Role');
 const Permission = require('./models/Permission');
 
@@ -342,8 +343,32 @@ const importData = async () => {
             };
         });
 
-        await User.insertMany(hashedUsers);
-        console.log(`✅ Created ${hashedUsers.length} users`);
+        const createdUsers = await User.insertMany(hashedUsers);
+        console.log(`✅ Created ${createdUsers.length} users`);
+
+        const demoCustomerUser = createdUsers.find((user) => user.email === 'customer@example.com');
+        if (demoCustomerUser) {
+            await Customer.findOneAndUpdate(
+                { portalEmail: demoCustomerUser.email },
+                {
+                    $set: {
+                        code: 'CUST-DEMO-001',
+                        name: demoCustomerUser.name,
+                        email: demoCustomerUser.email,
+                        portalEmail: demoCustomerUser.email,
+                        portalAccess: true,
+                        status: 'active',
+                        userId: demoCustomerUser._id,
+                        mobileNo: '',
+                        address1: '',
+                        city: '',
+                        pincode: ''
+                    }
+                },
+                { upsert: true, new: true, setDefaultsOnInsert: true }
+            );
+            console.log('✅ Linked demo customer User to an active Customer profile');
+        }
 
         console.log('🚀 SEEDING COMPLETE');
         process.exit();

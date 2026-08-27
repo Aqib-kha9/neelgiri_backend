@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test test/**/*.test.js"
   },
   "keywords": [],
   "author": "",
@@ -13,6 +13,7 @@
     "axios": "^1.16.0",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
+    "country-state-city": "^3.2.1",
     "csv-parser": "^3.2.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",

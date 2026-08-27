@@ -1,6 +1,33 @@
 const Pincode = require('../models/Pincode');
 const Branch = require('../models/Branch');
+const Location = require('../models/Location');
+
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const asyncHandler = require('express-async-handler');
+const { findValidBranchPincode } = require('../utils/pincodeValidation');
+
+const SERVICE_LOCATION_TYPES = ['BRANCH', 'DELIVERY_CENTER', 'PICKUP_POINT'];
+
+const validateServiceLocation = async (locationId) => {
+    if (!locationId) return null;
+
+    const location = await Location.findOne({
+        _id: locationId,
+        isDeleted: { $ne: true }
+    });
+
+    if (!location) {
+        throw new Error('Selected operational location was not found');
+    }
+    if (location.status !== 'ACTIVE') {
+        throw new Error('Pincodes can only be mapped to an active operational location');
+    }
+    if (!SERVICE_LOCATION_TYPES.includes(location.type)) {
+        throw new Error('Pincodes can only be mapped to a Branch, Delivery Centre, or Pickup Point');
+    }
+
+    return location;
+};
 
 // Helper: get branch IDs scoped to the requesting user's role
 const getScopedBranchFilter = async (req) => {
@@ -48,20 +75,35 @@ const getPincodes = asyncHandler(async (req, res) => {
             { district: { $regex: req.query.search, $options: 'i' } }
         ];
     }
-    if (req.query.state && req.query.state !== 'all') query.state = req.query.state;
-    if (req.query.district && req.query.district !== 'all') query.district = req.query.district;
+    if (req.query.state && req.query.state !== 'all') {
+        query.state = { $regex: `^${escapeRegex(req.query.state.trim())}$`, $options: 'i' };
+    }
+    if (req.query.district && req.query.district !== 'all') {
+        query.district = { $regex: `^${escapeRegex(req.query.district.trim())}$`, $options: 'i' };
+    }
     if (req.query.isServiceable) query.isServiceable = req.query.isServiceable === 'true';
     if (req.query.isActiveForBranch) query.isActiveForBranch = req.query.isActiveForBranch === 'true';
 
-    // Filter by branch mapping status
+    // Existing commercial branch mapping filter
     if (req.query.mapping === 'mapped') {
         query.branchId = { $ne: null };
     } else if (req.query.mapping === 'unmapped') {
         query.branchId = null;
     }
 
+    // Operational Location Master mapping filter
+    if (req.query.locationId && req.query.locationId !== 'all') {
+        query.locationId = req.query.locationId;
+    }
+    if (req.query.locationMapping === 'mapped') {
+        query.locationId = { $ne: null };
+    } else if (req.query.locationMapping === 'unmapped') {
+        query.locationId = null;
+    }
+
     const pincodes = await Pincode.find(query)
         .populate('branchId', 'name code')
+        .populate('locationId', 'name code type address status')
         .sort({ pincode: 1 })
         .skip(skip)
         .limit(limit);
@@ -103,13 +145,13 @@ const globalSearchPincode = asyncHandler(async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 100;
     const skip = (page - 1) * limit;
 
-    if (!district && !state && search.length < 3) {
+    if (!district && !state && search.length < 2) {
         return res.json({ pincodes: [], total: 0, page: 1, pages: 1 });
     }
 
     const query = {};
 
-    if (search.length >= 3) {
+    if (search.length >= 2) {
         query.$or = [
             { pincode: { $regex: search, $options: 'i' } },
             { officeName: { $regex: search, $options: 'i' } },
@@ -117,8 +159,12 @@ const globalSearchPincode = asyncHandler(async (req, res) => {
         ];
     }
     
-    if (state && state !== 'all') query.state = state;
-    if (district && district !== 'all') query.district = district;
+    if (state && state !== 'all') {
+        query.state = { $regex: `^${escapeRegex(String(state).trim())}$`, $options: 'i' };
+    }
+    if (district && district !== 'all') {
+        query.district = { $regex: `^${escapeRegex(String(district).trim())}$`, $options: 'i' };
+    }
 
     // Only allow non-super_admins to see globally serviceable and unmapped pincodes for claiming
     if (req.user.role.name !== 'super_admin') {
@@ -129,6 +175,7 @@ const globalSearchPincode = asyncHandler(async (req, res) => {
     const total = await Pincode.countDocuments(query);
     const results = await Pincode.find(query)
         .populate('branchId', 'name code')
+        .populate('locationId', 'name code type address status')
         .skip(skip)
         .limit(Math.min(limit, 500)) // Cap limit at 500
         .sort({ pincode: 1 });
@@ -192,16 +239,67 @@ const bulkUpdateServiceability = asyncHandler(async (req, res) => {
     });
 });
 
+// @desc    Validate a pincode for a branch location
+// @route   GET /api/pincodes/validate-branch/:pincode
+// @access  Private (Partner Admin, Super Admin)
+const validateBranchPincode = asyncHandler(async (req, res) => {
+    const roleName = req.user.role.name;
+    if (!['super_admin', 'partner_admin', 'partner'].includes(roleName)) {
+        res.status(403);
+        throw new Error('Not authorized to validate branch pincodes');
+    }
+
+    try {
+        const pincode = await findValidBranchPincode({
+            pincode: req.params.pincode,
+            state: req.query.state,
+            city: req.query.city
+        });
+
+        return res.json({
+            valid: true,
+            pincode: pincode.pincode,
+            officeName: pincode.officeName || '',
+            district: pincode.district || '',
+            state: pincode.state || ''
+        });
+    } catch (error) {
+        return res.status(error.statusCode || 400).json({
+            valid: false,
+            message: error.message || 'Pincode could not be verified'
+        });
+    }
+});
+
 // @desc    Check single pincode serviceability (public)
 // @route   GET /api/pincodes/check/:pincode
 // @access  Public
 const checkPincode = asyncHandler(async (req, res) => {
-    const pincode = await Pincode.findOne({ pincode: req.params.pincode }).populate('branchId', 'name code');
-    if (!pincode) {
-        res.status(404);
-        throw new Error('Pincode not found or not serviceable');
+    const normalizedPincode = String(req.params.pincode || '').trim();
+    const pincode = await Pincode.findOne({
+        pincode: normalizedPincode,
+        isServiceable: true,
+        isActiveForBranch: true,
+        branchId: { $ne: null }
+    })
+        .populate({
+            path: 'branchId',
+            select: 'name code isActive',
+            match: { isActive: true }
+        })
+        .populate('locationId', 'name code type address status');
+
+    if (!pincode || !pincode.branchId) {
+        return res.status(404).json({
+            serviceable: false,
+            message: 'Pickup service is not currently available for this pincode'
+        });
     }
-    res.json(pincode);
+
+    res.json({
+        ...pincode.toObject(),
+        serviceable: true
+    });
 });
 
 // @desc    Create a pincode (super_admin only)
@@ -216,12 +314,20 @@ const createPincode = asyncHandler(async (req, res) => {
         throw new Error('Branch Admin cannot create new pincodes. Use the Claim endpoint to assign existing pincodes to your branch.');
     }
 
+    if (req.body.locationId) {
+        await validateServiceLocation(req.body.locationId);
+    }
+
     const pincodeData = {
         ...req.body,
+        locationId: req.body.locationId || null,
         createdBy: req.user._id
     };
     const pincode = await Pincode.create(pincodeData);
-    res.status(201).json(pincode);
+    const populated = await Pincode.findById(pincode._id)
+        .populate('branchId', 'name code')
+        .populate('locationId', 'name code type address status');
+    res.status(201).json(populated);
 });
 
 // @desc    Claim a pincode for the requester's branch (set branchId + isServiceable)
@@ -471,9 +577,52 @@ const updatePincode = asyncHandler(async (req, res) => {
         return res.json(updated);
     }
 
-    // super_admin: full update
-    const updated = await Pincode.findByIdAndUpdate(req.params.id, req.body, { new: true }).populate('branchId', 'name code');
+    // super_admin: full update, with operational-facility validation
+    if (req.body.locationId) {
+        await validateServiceLocation(req.body.locationId);
+    }
+
+    const updateData = {
+        ...req.body,
+        ...(req.body.locationId === '' ? { locationId: null } : {})
+    };
+    const updated = await Pincode.findByIdAndUpdate(req.params.id, updateData, {
+        new: true,
+        runValidators: true
+    })
+        .populate('branchId', 'name code')
+        .populate('locationId', 'name code type address status');
     res.json(updated);
+});
+
+// @desc    Map selected pincodes to an operational Location Master facility
+// @route   POST /api/pincodes/bulk-map-location
+// @access  Private/Super Admin
+const bulkMapLocation = asyncHandler(async (req, res) => {
+    if (req.user.role.name !== 'super_admin') {
+        res.status(403);
+        throw new Error('Only Super Admin can change operational location mapping');
+    }
+
+    const { pincodeIds, locationId } = req.body;
+    if (!Array.isArray(pincodeIds) || pincodeIds.length === 0) {
+        res.status(400);
+        throw new Error('Please select at least one pincode');
+    }
+
+    const location = locationId ? await validateServiceLocation(locationId) : null;
+    const result = await Pincode.updateMany(
+        { _id: { $in: pincodeIds } },
+        { $set: { locationId: location?._id || null } }
+    );
+
+    res.json({
+        message: location
+            ? `Mapped ${result.modifiedCount} pincodes to ${location.name}`
+            : `Removed operational location mapping from ${result.modifiedCount} pincodes`,
+        count: result.modifiedCount,
+        location
+    });
 });
 
 // @desc    Delete pincode (super_admin only)
@@ -514,9 +663,11 @@ const bulkCreatePincodes = asyncHandler(async (req, res) => {
 
 module.exports = {
     getPincodes,
+    validateBranchPincode,
     getDistinctLocations,
     globalSearchPincode,
     bulkUpdateServiceability,
+    bulkMapLocation,
     checkPincode,
     createPincode,
     claimPincode,

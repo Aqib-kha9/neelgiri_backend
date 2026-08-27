@@ -1,10 +1,15 @@
 const roleCheck = (roles) => {
+    const allowedRoles = Array.isArray(roles) ? roles : [roles];
+
     return (req, res, next) => {
-        if (!roles.includes(req.user.role)) {
+        const roleName = req.user?.role?.name || req.user?.role;
+
+        if (!roleName || !allowedRoles.includes(roleName)) {
             return res.status(403).json({
-                message: `User role ${req.user.role} is not authorized to access this route`
+                message: `User role ${roleName || 'unknown'} is not authorized to access this route`
             });
         }
+
         next();
     };
 };

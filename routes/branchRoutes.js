@@ -4,6 +4,7 @@ const {
     createBranch,
     getBranches,
     updateBranch,
+    deleteBranch,
     getBranchHierarchy
 } = require('../controllers/branchController');
 const { protect } = require('../middleware/authMiddleware');
@@ -13,7 +14,8 @@ router.route('/')
     .get(protect, getBranches);
 
 router.route('/:id')
-    .put(protect, updateBranch);
+    .put(protect, updateBranch)
+    .delete(protect, deleteBranch);
 
 router.route('/:id/hierarchy')
     .get(protect, getBranchHierarchy);
