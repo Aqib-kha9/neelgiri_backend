@@ -45,7 +45,7 @@ const routeSchema = new mongoose.Schema({
 }, { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } });
 
 // Pre-save: calculate the complete origin-to-destination movement, including the final leg.
-routeSchema.pre('save', function (next) {
+routeSchema.pre('save', function () {
     const intermediateDistance = (this.stops || []).reduce(
         (sum, stop) => sum + (stop.distanceFromPrevKm || 0), 0
     );
@@ -57,7 +57,6 @@ routeSchema.pre('save', function (next) {
     this.totalTransitTimeHours = Math.round(
         ((intermediateMinutes + (this.finalLegTransitTimeMins || 0)) / 60) * 100
     ) / 100;
-    next();
 });
 
 module.exports = mongoose.model('Route', routeSchema);

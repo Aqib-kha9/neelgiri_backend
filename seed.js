@@ -55,6 +55,7 @@ const resources = [
     // Operations
     'op_rider_alloc', 'op_rider_perf', 'op_rider_shift',
     'op_ex_pending', 'op_ex_flow', 'op_ex_rca', 'op_ex_qc',
+    'op_trips', 'op_hub', 'op_rto', 'op_sla',
 
     // Reports
     'rep_del_perf', 'rep_part_perf', 'rep_branch_perf', 'rep_rider_perf',
@@ -142,6 +143,7 @@ const importData = async () => {
             ...getRead('rep_branch_perf'),
             ...getRead('rep_rev'),
             // Manifest Management
+            ...getFullPerms('op_trips'),
             ...getFullPerms('manifest_counter'),
             ...getFullPerms('manifest_inward'),
             ...getFullPerms('manifest_create'),
@@ -174,6 +176,7 @@ const importData = async () => {
             ...getRead('rep_del_perf'),
             ...getRead('rep_rider_perf'),
             // Manifest Management
+            ...getFullPerms('op_trips'),
             ...getFullPerms('manifest_counter'),
             ...getFullPerms('manifest_inward'),
             ...getFullPerms('manifest_create'),
@@ -198,6 +201,7 @@ const importData = async () => {
             // Tracking
             ...getRead('tracking_live'),
             // Manifest Management
+            ...getFullPerms('op_trips'),
             ...getFullPerms('manifest_counter'),
             ...getFullPerms('manifest_inward'),
             ...getFullPerms('manifest_create'),

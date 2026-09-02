@@ -483,14 +483,14 @@ exports.updateShipmentStatus = async (req, res) => {
             'cancelled': 'cancelled'
         };
         const targetInternalStatus = statusMap[status] || status;
-        const transitionCheck = validateStatusTransition(shipment.status, targetInternalStatus);
-        if (!transitionCheck.valid) {
+        const isValidTransition = validateStatusTransition(shipment.status, targetInternalStatus);
+        if (!isValidTransition) {
             return res.status(409).json({
                 message: 'Invalid status transition',
                 currentStatus: shipment.status,
                 attemptedStatus: targetInternalStatus,
                 validNextStatuses: getValidNextStatuses(shipment.status),
-                reason: transitionCheck.reason
+                reason: 'Transition not allowed by state machine'
             });
         }
 
@@ -535,8 +535,8 @@ exports.updateShipmentStatus = async (req, res) => {
                         journey: {
                             leg: (shipment.journey?.length || 0) + 1,
                             type: 'last_mile',
-                            fromBranch: targetDRS.branchId,
-                            toBranch: targetDRS.branchId,
+                            fromBranch: (targetDRS.branchId && targetDRS.branchId.toString().match(/^[0-9a-fA-F]{24}$/)) ? targetDRS.branchId : null,
+                            toBranch: (targetDRS.branchId && targetDRS.branchId.toString().match(/^[0-9a-fA-F]{24}$/)) ? targetDRS.branchId : null,
                             drsId: targetDRS._id,
                             timestamp: new Date(),
                             remark: `Delivery attempt #${attemptNumber} - SUCCESS (DRS: ${targetDRS.drsId})`
@@ -598,8 +598,8 @@ exports.updateShipmentStatus = async (req, res) => {
                             journey: {
                                 leg: (shipment.journey?.length || 0) + 1,
                                 type: 'rto',
-                                fromBranch: targetDRS.branchId,
-                                toBranch: shipment.originBranchId,
+                                fromBranch: (targetDRS.branchId && targetDRS.branchId.toString().match(/^[0-9a-fA-F]{24}$/)) ? targetDRS.branchId : null,
+                                toBranch: (shipment.originBranchId && shipment.originBranchId.toString().match(/^[0-9a-fA-F]{24}$/)) ? shipment.originBranchId : null,
                                 drsId: targetDRS._id,
                                 timestamp: new Date(),
                                 remark: `RTO initiated - ${attemptNumber}/${maxAttempts} attempts exhausted (DRS: ${targetDRS.drsId})`
@@ -667,8 +667,8 @@ exports.updateShipmentStatus = async (req, res) => {
                             journey: {
                                 leg: (shipment.journey?.length || 0) + 1,
                                 type: 'last_mile',
-                                fromBranch: targetDRS.branchId,
-                                toBranch: targetDRS.branchId,
+                                fromBranch: (targetDRS.branchId && targetDRS.branchId.toString().match(/^[0-9a-fA-F]{24}$/)) ? targetDRS.branchId : null,
+                                toBranch: (targetDRS.branchId && targetDRS.branchId.toString().match(/^[0-9a-fA-F]{24}$/)) ? targetDRS.branchId : null,
                                 drsId: targetDRS._id,
                                 timestamp: new Date(),
                                 remark: `Delivery attempt #${attemptNumber} - FAILED: ${failureReason || 'N/A'} (DRS: ${targetDRS.drsId})`

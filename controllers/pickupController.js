@@ -32,7 +32,12 @@ const {
     canExecutePickup
 } = require('../utils/pickupPolicy');
 
-const pickupScope = (user) => buildScopeQuery(user, { customerField: 'customer' });
+const pickupScope = (user) => {
+    if (roleName(user) === 'rider') {
+        return { assignedRider: user._id };
+    }
+    return buildScopeQuery(user, { customerField: 'customer' });
+};
 
 const getScopedPickup = (user, id) => {
     const scope = pickupScope(user);
@@ -502,8 +507,8 @@ const scanParcelAtPickup = asyncHandler(async (req, res) => {
         return res.status(403).json({ message: 'Only the assigned rider or scoped operations staff can scan this pickup' });
     }
 
-    if (!['assigned', 'pickup_started'].includes(pickup.status)) {
-        return res.status(400).json({ message: `Cannot scan — pickup is ${pickup.status}` });
+    if (pickup.status !== 'pickup_started') {
+        return res.status(400).json({ message: `Cannot scan — pickup must be started first (current: ${pickup.status})` });
     }
 
     const existing = pickup.shipments.find(s => s.awb === awb);
@@ -530,12 +535,6 @@ const scanParcelAtPickup = asyncHandler(async (req, res) => {
     existing.scannedAt = new Date();
     existing.weight = weight || existing.weight;
     existing.description = description || existing.description;
-
-    // Auto-start if first scan
-    if (pickup.status === 'assigned') {
-        pickup.status = 'pickup_started';
-        pickup.actualPickupTime = new Date();
-    }
 
     pickup.totalShipments = pickup.shipments.length;
     pickup.totalWeight = pickup.shipments.reduce((sum, s) => sum + (s.weight || 0), 0);
@@ -564,6 +563,10 @@ const markParcelMissed = asyncHandler(async (req, res) => {
 
     if (!canExecutePickup(req.user, pickup)) {
         return res.status(403).json({ message: 'Only the assigned rider or scoped operations staff can mark parcels missed' });
+    }
+
+    if (pickup.status !== 'pickup_started') {
+        return res.status(400).json({ message: `Cannot mark missed — pickup must be started first (current: ${pickup.status})` });
     }
 
     if (!awb) {

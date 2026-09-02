@@ -30,10 +30,14 @@ const createTrip = asyncHandler(async (req, res) => {
     const {
         vehicleId,
         driverId,
+        marketVehicleNumber,
+        marketDriverName,
+        marketDriverPhone,
         routeId,
         originBranch,
         destinationBranch,
         manifests,
+        manifestIds, // Frontend might send manifests or manifestIds
         plannedDeparture,
         transportMode,
         vendor,
@@ -51,7 +55,7 @@ const createTrip = asyncHandler(async (req, res) => {
     const [originBranchDoc, destBranchDoc, vehicleDoc, driverDoc, routeDoc] = await Promise.all([
         Branch.findById(originBranch).select('name code'),
         Branch.findById(destinationBranch).select('name code'),
-        vehicleId ? Vehicle.findById(vehicleId).select('vehicleNumber type') : null,
+        vehicleId ? Vehicle.findById(vehicleId).select('regNo type') : null,
         driverId ? Driver.findById(driverId).select('name phone') : null,
         routeId ? Route.findById(routeId).select('code name stops totalDistanceKm totalTransitTimeHours') : null
     ]);
@@ -71,20 +75,23 @@ const createTrip = asyncHandler(async (req, res) => {
         }));
     }
 
+    // Frontend might send 'manifests' or 'manifestIds'
+    const finalManifests = manifests || manifestIds || [];
+
     const trip = await Trip.create({
         tripId: generateTripId(),
         vehicle: vehicleId || null,
-        vehicleNumber: vehicleDoc?.vehicleNumber || '',
+        vehicleNumber: vehicleDoc?.regNo || marketVehicleNumber || '',
         driver: driverId || null,
-        driverName: driverDoc?.name || '',
-        driverPhone: driverDoc?.phone || '',
+        driverName: driverDoc?.name || marketDriverName || '',
+        driverPhone: driverDoc?.phone || marketDriverPhone || '',
         route: routeId || null,
         routeCode: routeDoc?.code || '',
         originBranch,
         originBranchName: originBranchDoc.name,
         destinationBranch,
         destinationBranchName: destBranchDoc.name,
-        manifests: manifests || [],
+        manifests: finalManifests,
         stops,
         plannedDeparture: plannedDeparture || null,
         estimatedArrival: plannedDeparture && routeDoc?.totalTransitTimeHours
@@ -92,7 +99,7 @@ const createTrip = asyncHandler(async (req, res) => {
             : null,
         transportMode: transportMode || 'ROAD',
         vendor: vendor || '',
-        totalManifests: manifests ? manifests.length : 0,
+        totalManifests: finalManifests.length,
         partnerId,
         branchId,
         createdBy: req.user._id,
@@ -105,9 +112,9 @@ const createTrip = asyncHandler(async (req, res) => {
     });
 
     // Link manifests to this trip
-    if (manifests && manifests.length > 0) {
+    if (finalManifests.length > 0) {
         await Manifest.updateMany(
-            { _id: { $in: manifests } },
+            { _id: { $in: finalManifests } },
             { $set: { tripId: trip._id, status: 'vehicle_assigned' } }
         );
     }
@@ -119,7 +126,7 @@ const createTrip = asyncHandler(async (req, res) => {
         description: `Trip ${trip.tripId} created: ${originBranchDoc.name} → ${destBranchDoc.name}`
     });
 
-    res.status(201).json(trip);
+    res.status(201).json({ data: trip, message: 'Trip created successfully' });
 });
 
 // @desc    Get all trips (scoped)
@@ -148,12 +155,12 @@ const getTrips = asyncHandler(async (req, res) => {
 
     const [trips, total] = await Promise.all([
         Trip.find(query)
-            .populate('vehicle', 'vehicleNumber type')
+            .populate('vehicle', 'regNo type')
             .populate('driver', 'name phone')
             .populate('route', 'code name')
             .populate('originBranch', 'name code')
             .populate('destinationBranch', 'name code')
-            .populate('manifests', 'manifestId status')
+            .populate('manifests', 'manifestId status shipments')
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit),

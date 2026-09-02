@@ -975,7 +975,7 @@ const getManifests = async (req, res) => {
                 filters.destinationBranch = { $in: branchIds };
             }
             if (status) {
-                filters.status = status;
+                filters.status = { $in: status.split(',') };
             } else {
                 filters.status = { $in: ['in_transit', 'arrived', 'received'] };
             }
@@ -983,7 +983,9 @@ const getManifests = async (req, res) => {
             if (branchIds.length > 0) {
                 filters.sourceBranch = { $in: branchIds };
             }
-            if (status) filters.status = status;
+            if (status) {
+                filters.status = { $in: status.split(',') };
+            }
         } else {
             if (effectiveRole === 'super_admin') {
                 // Admin sees all

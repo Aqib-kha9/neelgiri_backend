@@ -109,7 +109,7 @@ const getScopedRiders = async (user) => {
     const roleName = getRoleName(user);
     if (!roleName) return [];
 
-    let query = { isInactive: false, status: { $ne: 'inactive' } };
+    let query = { isInactive: { $ne: true }, status: { $ne: 'inactive' } };
     if (roleName === 'super_admin') {
         // all riders
     } else if (roleName === 'partner_admin' || roleName === 'partner') {

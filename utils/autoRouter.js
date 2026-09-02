@@ -56,9 +56,21 @@ const findBranchForPincode = async (pincode) => {
             isActive: true
         }).select('name code address contact isActive');
         if (branch) {
+            let location = null;
+            if (pincodeDoc.locationId) {
+                location = await Location.findById(pincodeDoc.locationId).select('name code type status');
+            }
+            if (!location) {
+                location = await Location.findOne({ branchId: branch._id, status: 'ACTIVE' }).select('name code type status');
+            }
+            if (!location) {
+                location = await Location.findOne({ 'address.pincode': normalizedPincode, status: 'ACTIVE' }).select('name code type status');
+            }
+
             return {
                 found: true,
                 branch,
+                location,
                 pincodeDoc,
                 isODA: pincodeDoc.isODA || false,
                 transitDays: pincodeDoc.transitDays || 0
@@ -77,9 +89,25 @@ const findBranchForPincode = async (pincode) => {
  * Find the best route connecting origin branch to destination branch.
  * Looks for routes where sourceHub/destinationHub match the branch locations.
  */
-const findRouteForBranches = async (originBranchId, destinationBranchId) => {
-    // Try to find a direct route
-    let route = await Route.findOne({
+const findRouteForBranches = async (originBranchId, destinationBranchId, originLocationId, destinationLocationId) => {
+    let route = null;
+    
+    // Primary method: Try to find a direct route using Location IDs if available
+    if (originLocationId && destinationLocationId) {
+        route = await Route.findOne({
+            sourceHub: originLocationId,
+            destinationHub: destinationLocationId,
+            status: 'ACTIVE',
+            isDeleted: { $ne: true }
+        }).sort({ totalDistanceKm: 1 });
+        
+        if (route) {
+            return { found: true, route, isDirect: true };
+        }
+    }
+
+    // Fallback: Try to find a direct route using Branch IDs (legacy support)
+    route = await Route.findOne({
         $or: [
             { sourceHub: originBranchId, destinationHub: destinationBranchId },
             { 'sourceBranch': originBranchId, 'destinationBranch': destinationBranchId }
@@ -130,7 +158,9 @@ const autoRoute = async (originPincode, destinationPincode) => {
         originPincode,
         destinationPincode,
         originBranch: null,
+        originLocation: null,
         destinationBranch: null,
+        destinationLocation: null,
         isLocal: false,
         route: null,
         isODA: false,
@@ -143,12 +173,14 @@ const autoRoute = async (originPincode, destinationPincode) => {
         result.errors.push(`Origin: ${originResult.reason}`);
     } else {
         result.originBranch = originResult.branch;
+        result.originLocation = originResult.location;
     }
 
     if (!destResult.found) {
         result.errors.push(`Destination: ${destResult.reason}`);
     } else {
         result.destinationBranch = destResult.branch;
+        result.destinationLocation = destResult.location;
         result.isODA = destResult.isODA;
         result.estimatedTransitDays = destResult.transitDays;
     }
@@ -166,7 +198,12 @@ const autoRoute = async (originPincode, destinationPincode) => {
     }
 
     // Non-local — find route
-    const routeResult = await findRouteForBranches(originResult.branch._id, destResult.branch._id);
+    const routeResult = await findRouteForBranches(
+        originResult.branch._id, 
+        destResult.branch._id,
+        originResult.location ? originResult.location._id : null,
+        destResult.location ? destResult.location._id : null
+    );
     if (routeResult.found) {
         result.route = routeResult.route;
         result.isDirect = routeResult.isDirect;
